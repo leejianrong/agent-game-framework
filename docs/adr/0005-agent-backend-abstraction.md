@@ -11,8 +11,9 @@ OpenRouter API call, or piping output from an interactive coding-agent CLI
 (Claude Code, Codex) acting as the "LLM." These have very different operational
 shapes — one is a stateless HTTP call usable in an automated test, the other
 assumes an interactive terminal/session. The user also wants, eventually, the
-agent to banter over voice (LLM text -> TTS), a third, still different shape
-(a streaming audio pipeline, possibly Runpod-hosted, with no local GPU).
+agent to banter over voice, and to support both a text+TTS pipeline and a
+native multimodal (audio-in/audio-out) pipeline — how that's shaped is decided
+separately in ADR-0008 and does not affect this ADR's `decide()` contract.
 
 Separately, the user was explicit that a match must support any mix of seats —
 1 human + N AI agents, or zero humans and all AI seats (e.g. for testing, or a
@@ -50,9 +51,11 @@ ADR-0004) are `SeatController` implementations too, with no LLM involved at all.
 Because every seat is assigned a `SeatController` independently, a `Match` is
 constructed as a seat -> controller mapping with **zero required human
 seats** — 1 human + N agents and all-AI (0 humans) are both just different
-mappings, not different code paths. Claude-Code/Codex-as-controller and any
-future TTS-producing controller are future `SeatController` implementations,
-not architectural changes when they're eventually built.
+mappings, not different code paths. Claude-Code/Codex-as-controller is a
+future `SeatController` implementation, not an architectural change, when it's
+eventually built. Voice/conversation is deliberately **not** modeled as a
+`SeatController` variant at all — see ADR-0008's `Conversable` capability,
+which a `SeatController` implementation may additionally provide.
 
 Illegal or malformed decisions from any controller (an action outside
 `legal_actions`, or a response that fails to parse) are rejected by the `Match`
@@ -73,10 +76,8 @@ handled differently because the seat happens to be human.
 A match with any number of human seats from 0 to N is a configuration choice
 (which `SeatController` fills each seat), never a special-cased code path —
 directly satisfying the "1 human + N agents, or all-AI" requirement. Swapping
-or adding an AI access method later (voice controller, Claude Code as the
-driver) is an additive `SeatController` implementation, not a harness rewrite.
-The cost: `SeatController` has to anticipate needs it can't fully validate yet
-(e.g. what a streaming/voice controller's `decide()` call shape should look
-like, or how a human controller would work over voice input rather than stdin)
-— it may need a revision once a second human-facing or streaming controller is
-actually built, an accepted, deferred risk rather than something solved now.
+or adding an AI access method later (Claude Code as the driver) is an additive
+`SeatController` implementation, not a harness rewrite. Voice and multimodal
+conversation are resolved separately by ADR-0008's `Conversable` capability,
+which keeps `decide()`'s contract exactly as simple as it is today — no
+revision needed here once a voice-capable seat is actually built.

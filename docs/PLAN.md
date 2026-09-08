@@ -100,7 +100,10 @@ algorithm-composition modes.
   yet (hidden information, simultaneous moves — see ADR-0003's consequences).
 - Voice (TTS/STT), Runpod-hosted models, and true real-time performance. Only
   the text half of "feel human" (LLM banter as text) is in scope; voice is a
-  future `SeatController` implementation, not built here (ADR-0005, Q8).
+  future `Conversable` implementation, not built here — its shape is decided
+  (both a text+TTS pipeline and a native multimodal pipeline are supported,
+  as swappable implementations of the same interface) but nothing is built
+  against it this milestone (ADR-0008, Q8, Q17).
 - Claude-Code/Codex-as-agent-backend — the abstraction supports it, but only
   `OpenRouterBackend` is actually built.
 - Persistence/replay of matches, and networked (non-local) multiplayer (Q9, Q10).
@@ -187,6 +190,7 @@ Per-slice test plans are in SLICES.md.
 | Q6 | Harness targets an abstract `SeatController`, not a concrete OpenRouter call | Low cost — the abstraction is cheap; skipping it would mean a rewrite when a second backend (voice, Claude Code) is added |
 | Q7 | CLI before MCP, both thin adapters over one `Match` | Low cost — order is easily reversed since neither depends on the other |
 | Q8 | Voice fully out of scope this milestone | Re-litigated naturally when a voice-driven game is actually planned |
+| Q17 | Conversation (text or audio) is a separate `Conversable` capability, decoupled from `SeatController.decide()`, supporting both a text+TTS pipeline and a native multimodal pipeline as swappable implementations | Low cost — decided ahead of any voice build, cheap to get right now; getting it wrong would mean redesigning `SeatController` once voice is actually planned |
 | Q11 | `schema_version` on serialized state from day one | High cost if skipped and persistence is added later without it (silent corruption on format change) |
 
 ## Open risks
@@ -206,7 +210,11 @@ Per-slice test plans are in SLICES.md.
   could become wasted work per turn if a real game's algorithm is expensive —
   not observable with Tic-Tac-Toe's near-instant minimax, only once a slower
   real algorithm exists.
-- `SeatController`'s `decide()` shape is designed around a single
-  request/response per turn; a future streaming voice controller (partial
-  audio in, partial audio out) may not fit it cleanly. Deferred risk, flagged
-  in ADR-0005, not addressed this milestone.
+- (Resolved by ADR-0008) `SeatController`'s `decide()` shape is a single
+  request/response per game turn and was never meant to carry a running
+  conversation — voice/multimodal conversation is now modeled as a separate
+  `Conversable` capability, decoupled from `decide()` entirely, so it doesn't
+  force a revision of `SeatController`. Still unbuilt and unvalidated this
+  milestone; the remaining risk is that a real streaming/realtime
+  `Conversable` implementation surfaces a need `ConversationInput`/
+  `ConversationOutput` didn't anticipate (ADR-0008 §Consequences).
