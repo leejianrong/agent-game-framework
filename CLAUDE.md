@@ -26,7 +26,7 @@ See `docs/PLAN.md` for the full problem/solution and `docs/adr/0001` through
 
 ## Toolchain
 
-- Python 3.11+, managed with [`uv`](https://docs.astral.sh/uv/) (ADR-0002).
+- Python 3.12+, managed with [`uv`](https://docs.astral.sh/uv/) (ADR-0002).
   Lockfile: `uv.lock`, created by `KAN-1274`.
 - Lint/format: `ruff`. Types: `mypy`. Tests: `pytest`.
 - Tests are split by cost, mirroring each slice's test plan in `SLICES.md`:

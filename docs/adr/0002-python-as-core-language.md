@@ -20,7 +20,7 @@ losing the Python AI ecosystem, and neither is foreclosed by choosing Python now
 ## Decision
 
 The core framework, all connectors (CLI, MCP), and the agent harness are
-implemented in Python (3.11+). Game-specific advisor algorithms are also
+implemented in Python (3.12+). Game-specific advisor algorithms are also
 expected to be Python, to reuse existing libraries directly rather than through
 a subprocess/FFI boundary.
 
