@@ -18,7 +18,7 @@ jobs:
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
@@ -39,7 +39,7 @@ jobs:
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
@@ -58,7 +58,7 @@ jobs:
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
@@ -77,7 +77,7 @@ jobs:
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
