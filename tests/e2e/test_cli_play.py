@@ -68,6 +68,52 @@ def test_human_vs_bot_rejects_bad_input_without_crashing_or_skipping_the_turn() 
     assert result.stdout.count("X plays ") >= 1
 
 
+def test_scripted_stdin_drives_a_full_win_and_final_board_matches_the_winning_line() -> None:
+    """This is the V1 test plan's "CLI human-vs-bot scripted stdin drives a
+    full game to a win, printed board matches the winning line" case,
+    strengthened: the bad-input test above already proves a human-vs-bot
+    match reaches "Game over."/some winner, but with an unseeded
+    ``bot:random`` opponent (only ``HumanCLIController`` and unseeded
+    ``RandomBotController`` are wired up, KAN-1279 -- no seeding knob on the
+    CLI), *which* line wins can't be pinned down deterministically. So both
+    seats here are scripted via ``human`` (stdin), which exercises the exact
+    same ``run_match``/``Match.run_to_completion`` code a real human-vs-bot
+    match uses -- the CLI has no branch for "how many human seats" -- while
+    making the win itself, and the final board, fully predictable and
+    assertable: X takes the top row (cells 0, 1, 2), O takes cells 3 and 4
+    in between.
+
+    Turn order (strict alternation, X first): X:0, O:3, X:1, O:4, X:2 -- X
+    completes the top row on its third move and wins.
+    """
+    scripted_stdin = "\n".join(["0", "3", "1", "4", "2"]) + "\n"
+
+    result = subprocess.run(
+        ["agf", "play", "tictactoe", "--seat", "X=human", "--seat", "O=human"],
+        input=scripted_stdin,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=_subprocess_env(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Game over. Winner(s): X" in result.stdout
+
+    # The last rendered board before "Game over." is X's winning board:
+    #   X | X | X
+    #   ---------
+    #   O | O | .
+    #   ---------
+    #   . | . | .
+    board_start = result.stdout.rindex("X | X | X")
+    board_block = result.stdout[board_start:]
+    board_lines = [line for line in board_block.splitlines() if line.strip()]
+    assert board_lines[0] == "X | X | X"
+    assert board_lines[2] == "O | O | ."
+    assert board_lines[4] == ". | . | ."
+
+
 def test_all_bot_match_completes_with_no_stdin_interaction() -> None:
     """Zero human seats: both seats are ``bot:random``. Must complete without
     hanging and without reading stdin at all -- proving no-stdin-required
