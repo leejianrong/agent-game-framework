@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Mirrors CI's cheap jobs: lint + typecheck + the no-infra unit test layer.
+# Install once per clone: git config core.hooksPath .githooks && chmod +x .githooks/pre-push
+# Scoped exception when you've already verified the failure is unrelated: git push --no-verify
+set -euo pipefail
+
+if [ ! -f pyproject.toml ]; then
+  echo "pre-push: no pyproject.toml yet (pre-Slice-1) -- nothing to check"
+  exit 0
+fi
+
+echo "pre-push: ruff"
+uv run ruff check .
+
+echo "pre-push: mypy"
+uv run mypy src
+
+echo "pre-push: unit tests"
+uv run pytest tests/unit -q

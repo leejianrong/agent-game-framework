@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Check for code
+        id: code
+        run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        run: uv sync --all-extras --dev
+      - if: steps.code.outputs.present == 'true'
+        run: uv run ruff check .
+      - if: steps.code.outputs.present == 'true'
+        run: uv run mypy src
+      - if: steps.code.outputs.present == 'false'
+        run: echo "No pyproject.toml yet (pre-Slice-1) -- nothing to lint."
+
+  unit:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Check for code
+        id: code
+        run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        run: uv sync --all-extras --dev
+      - if: steps.code.outputs.present == 'true'
+        run: uv run pytest tests/unit -q
+      - if: steps.code.outputs.present == 'false'
+        run: echo "No pyproject.toml yet (pre-Slice-1) -- nothing to test."
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Check for code
+        id: code
+        run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        run: uv sync --all-extras --dev
+      - if: steps.code.outputs.present == 'true' && hashFiles('tests/integration/**') != ''
+        run: uv run pytest tests/integration -q
+      - if: steps.code.outputs.present == 'false'
+        run: echo "No pyproject.toml yet (pre-Slice-1) -- nothing to test."
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Check for code
+        id: code
+        run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        run: uv sync --all-extras --dev
+      - if: steps.code.outputs.present == 'true' && hashFiles('tests/e2e/**') != ''
+        run: uv run pytest tests/e2e -q
+      - if: steps.code.outputs.present == 'false'
+        run: echo "No pyproject.toml yet (pre-Slice-1) -- nothing to test."

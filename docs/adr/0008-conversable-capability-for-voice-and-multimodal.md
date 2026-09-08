@@ -45,7 +45,7 @@ Neither fits into `decide()`/`SeatDecision` as specified:
 
 A new Protocol, independent of `SeatController` and `GameEngine` alike:
 
-```
+```python
 Conversable.respond(history: list[ConversationTurn], incoming: ConversationInput) -> ConversationOutput
 ```
 
