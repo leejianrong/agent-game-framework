@@ -1,17 +1,23 @@
 """Command-line entry point for agent-game-framework (console script: ``agf``).
 
 ``agf --help``/``agf --version`` are the KAN-1274 package-skeleton behavior
-and are unchanged here. This card (KAN-1279) adds the ``play`` subcommand:
+and are unchanged here. The ``play`` subcommand (KAN-1279, turn-loop
+mechanics moved into ``Match`` by KAN-1280):
 
     agf play tictactoe --seat X=human --seat O=bot:random [--json]
 
 Per ADR-0006, this module is a *thin* adapter over ``Match``/``GameEngine``:
-it parses ``--seat``/``--json``, drives one ``Match`` instance by repeatedly
-calling ``current_players()``/``submit_action()``, and formats output -- it
-never re-implements or re-checks game rules itself. Every legality decision
-is left to ``Match.submit_action`` (which delegates to the engine's
-``apply_action``); this module only reacts to the ``IllegalActionError`` it
-may raise.
+it parses ``--seat``/``--json``, builds a seat -> ``SeatController`` mapping
+and hands it to ``Match`` (which owns turn-loop mechanics, PLAN.md Shape S2),
+and formats output via the ``on_turn``/``on_illegal_action`` hooks
+``Match.run_to_completion`` calls back into -- it never re-implements or
+re-checks game rules itself. Every legality decision is left to
+``Match.submit_action`` (which delegates to the engine's ``apply_action``);
+this module only reacts to the ``IllegalActionError`` ``Match`` surfaces via
+``on_illegal_action``. A match with zero human seats (all ``bot:random``)
+drives through this exact same code path as a mixed human/bot match -- "how
+many humans" is only a difference in which controllers land in the seat map
+handed to ``Match``, per R1/ADR-0005.
 
 Only Tic-Tac-Toe (``examples.tictactoe``, KAN-1277) is registered as a
 playable game for now -- see ``GAME_REGISTRY``. That engine lives outside
@@ -42,6 +48,7 @@ from agent_game_framework.core import (
     Match,
     PlayerId,
     SeatController,
+    SeatDecision,
 )
 
 GameFactory = Callable[[], GameEngine[Any, Any, Any]]
@@ -135,76 +142,75 @@ def render_tictactoe_board(board: list[PlayerId | None]) -> str:
 
 def run_match(
     match: Match[Any, Any, Any],
-    seats: dict[PlayerId, SeatController[Any, Any]],
     *,
     game_name: str,
     json_mode: bool,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    """Drive ``match`` to completion, one seat decision at a time.
+    """Drive ``match`` to completion, formatting output as each turn resolves.
 
-    For each player named by ``match.current_players()``, calls that seat's
-    ``decide()`` and submits the resulting action via
-    ``match.submit_action()``. This is the whole game loop -- no rule
-    checking happens here (ADR-0006); ``Match``/the engine is the sole
-    authority on legality.
+    ``match`` must already have been constructed with its seat map (``Match(
+    ..., seats=...)``, KAN-1280) -- turn-loop mechanics (asking
+    ``current_players()``'s seats to ``decide()``, submitting the result)
+    live entirely in ``Match.run_to_completion``/``Match.play_turn`` now
+    (PLAN.md Shape S2); this function only supplies the ``on_turn``/
+    ``on_illegal_action`` hooks that turn a resolved turn into CLI output --
+    no rule checking happens here (ADR-0006), and this module never drives
+    the loop itself. A zero-human-seat (all-bot) match and a mixed
+    human/bot match both flow through this exact same call (R1).
 
     If ``submit_action`` raises ``IllegalActionError`` (a defensive path: in
     normal operation a well-behaved ``SeatController`` only ever returns an
     action from the ``legal_actions`` it was given, so this should not
-    normally fire), the error is reported and the loop simply continues --
-    since the match's internal state is unchanged on a raised
+    normally fire), ``on_illegal_action`` reports it and ``Match`` continues
+    the loop -- since the match's internal state is unchanged on a raised
     ``IllegalActionError`` (see ``Match.submit_action``), the *same* player
-    is still in ``current_players()`` on the next iteration, so that seat is
+    is still in ``current_players()`` on the next round, so that seat is
     asked to decide again rather than the turn silently advancing to anyone
     else or the whole match crashing.
 
     Turn output (rendered board or ``--json`` envelope) is only printed after
     a *successful* ``submit_action`` call.
     """
-    while not match.is_terminal():
-        for player in match.current_players():
-            controller = seats[player]
-            observation = match.observation_for(player)
-            legal_actions = match.legal_actions(player)
-            decision = controller.decide(observation, legal_actions)
 
-            try:
-                match.submit_action(player, decision.action)
-            except IllegalActionError as exc:
-                if json_mode:
-                    print_fn(
-                        json.dumps(
-                            {
-                                "type": "illegal_action",
-                                "seat": player,
-                                "action": decision.action,
-                                "error": str(exc),
-                            }
-                        )
-                    )
-                else:
-                    print_fn(f"Illegal move by {player}: {exc} -- {player} to move again.")
-                continue
-
-            if json_mode:
-                print_fn(
-                    json.dumps(
-                        {
-                            "type": "turn",
-                            "seat": player,
-                            "action": decision.action,
-                            "banter": decision.banter,
-                            "state": match.serialize(),
-                        }
-                    )
+    def on_turn(player: PlayerId, decision: SeatDecision[Any]) -> None:
+        if json_mode:
+            print_fn(
+                json.dumps(
+                    {
+                        "type": "turn",
+                        "seat": player,
+                        "action": decision.action,
+                        "banter": decision.banter,
+                        "state": match.serialize(),
+                    }
                 )
-            else:
-                banter_suffix = f'  ("{decision.banter}")' if decision.banter else ""
-                print_fn(f"{player} plays {decision.action!r}{banter_suffix}")
-                if game_name == "tictactoe":
-                    print_fn(render_tictactoe_board(match.observation_for(player)["board"]))
-                print_fn()
+            )
+        else:
+            banter_suffix = f'  ("{decision.banter}")' if decision.banter else ""
+            print_fn(f"{player} plays {decision.action!r}{banter_suffix}")
+            if game_name == "tictactoe":
+                print_fn(render_tictactoe_board(match.observation_for(player)["board"]))
+            print_fn()
+
+    def on_illegal_action(
+        player: PlayerId, decision: SeatDecision[Any], exc: IllegalActionError
+    ) -> None:
+        if json_mode:
+            print_fn(
+                json.dumps(
+                    {
+                        "type": "illegal_action",
+                        "seat": player,
+                        "action": decision.action,
+                        "error": str(exc),
+                    }
+                )
+            )
+        else:
+            print_fn(f"Illegal move by {player}: {exc} -- {player} to move again.")
+
+    match.run_to_completion(on_turn=on_turn, on_illegal_action=on_illegal_action)
 
     winners = match.winners()
     if json_mode:
@@ -249,12 +255,12 @@ def cmd_play(args: argparse.Namespace, *, print_fn: Callable[..., None] = print)
 
     engine = GAME_REGISTRY[args.game]()
     try:
-        match: Match[Any, Any, Any] = Match(engine, players=order)
+        match: Match[Any, Any, Any] = Match(engine, players=order, seats=seats)
     except ValueError as exc:
         print_fn(f"Cannot start {args.game!r} with seats {order!r}: {exc}")
         return 2
 
-    run_match(match, seats, game_name=args.game, json_mode=args.json, print_fn=print_fn)
+    run_match(match, game_name=args.game, json_mode=args.json, print_fn=print_fn)
     return 0
 
 

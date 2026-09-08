@@ -1,11 +1,18 @@
-"""Integration tests for the ``agf play`` game loop (``run_match``, KAN-1279,
-ADR-0006), driven in-process against the real ``TicTacToeEngine``/``Match``
--- no subprocess, no argparse, no real stdin. These exercise ``run_match``'s
-own reaction to ``Match.submit_action`` raising ``IllegalActionError`` (the
-defensive path: a well-behaved ``SeatController`` should never trigger this
-in practice, since ``HumanCLIController``'s own re-prompt loop is already
-covered at the unit level in KAN-1278; here we force it directly with a
-scripted fake controller instead of re-testing that re-prompt loop).
+"""Integration tests for the ``agf play`` game loop (``run_match``, KAN-1279;
+turn-loop mechanics moved into ``Match.run_to_completion`` by KAN-1280),
+driven in-process against the real ``TicTacToeEngine``/``Match`` -- no
+subprocess, no argparse, no real stdin. These exercise ``run_match``'s own
+reaction (via the ``on_illegal_action`` hook it hands to
+``Match.run_to_completion``) to ``Match.submit_action`` raising
+``IllegalActionError`` (the defensive path: a well-behaved
+``SeatController`` should never trigger this in practice, since
+``HumanCLIController``'s own re-prompt loop is already covered at the unit
+level in KAN-1278; here we force it directly with a scripted fake controller
+instead of re-testing that re-prompt loop).
+
+As of KAN-1280, ``Match`` owns the seat map -- pass ``seats`` to ``Match(...)``
+directly rather than to ``run_match`` (which now only takes an
+already-seated ``match``).
 """
 
 from __future__ import annotations
@@ -54,19 +61,17 @@ def test_illegal_action_from_submit_action_does_not_advance_the_turn() -> None:
     at the connector layer, with a controller double instead of scripted
     stdin.
     """
-    engine = TicTacToeEngine()
-    match: Match[Any, int, Any] = Match(engine, players=["X", "O"])
-
     # X: 0 (legal), 0 again (illegal -- occupied), 2, 4, 6 (wins via 2-4-6 diagonal)
     x_controller = _ScriptedController([0, 0, 2, 4, 6])
     # O: 1, 3, 5 -- only 3 calls needed since X wins on its 4th *successful* move
     o_controller = _ScriptedController([1, 3, 5])
     seats: dict[PlayerId, Any] = {"X": x_controller, "O": o_controller}
 
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(engine, players=["X", "O"], seats=seats)
+
     messages: list[str] = []
-    run_match(
-        match, seats, game_name="tictactoe", json_mode=False, print_fn=_recording_print_fn(messages)
-    )
+    run_match(match, game_name="tictactoe", json_mode=False, print_fn=_recording_print_fn(messages))
 
     assert any("Illegal move by X" in line for line in messages)
     assert match.is_terminal()
@@ -79,16 +84,17 @@ def test_illegal_action_from_submit_action_does_not_advance_the_turn() -> None:
 
 
 def test_illegal_action_message_names_the_offending_seat_and_does_not_crash() -> None:
-    engine = TicTacToeEngine()
-    match: Match[Any, int, Any] = Match(engine, players=["A", "B"])
-
     a_controller = _ScriptedController([-1, 0, 4, 8])  # -1 is out of range: rejected
     b_controller = _ScriptedController([1, 2])
+
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(
+        engine, players=["A", "B"], seats={"A": a_controller, "B": b_controller}
+    )
 
     messages: list[str] = []
     run_match(
         match,
-        {"A": a_controller, "B": b_controller},
         game_name="tictactoe",
         json_mode=False,
         print_fn=_recording_print_fn(messages),
@@ -103,16 +109,17 @@ def test_illegal_action_message_names_the_offending_seat_and_does_not_crash() ->
 def test_illegal_action_in_json_mode_emits_a_json_line_not_the_board() -> None:
     import json
 
-    engine = TicTacToeEngine()
-    match: Match[Any, int, Any] = Match(engine, players=["X", "O"])
-
     x_controller = _ScriptedController([0, 0, 2, 4, 6])
     o_controller = _ScriptedController([1, 3, 5])
+
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(
+        engine, players=["X", "O"], seats={"X": x_controller, "O": o_controller}
+    )
 
     lines: list[str] = []
     run_match(
         match,
-        {"X": x_controller, "O": o_controller},
         game_name="tictactoe",
         json_mode=True,
         print_fn=_recording_print_fn(lines),
