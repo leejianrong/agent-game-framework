@@ -14,12 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - if: steps.code.outputs.present == 'true'
         run: uv sync --all-extras --dev
       - if: steps.code.outputs.present == 'true'
@@ -34,12 +35,13 @@ jobs:
     needs: lint
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - if: steps.code.outputs.present == 'true'
         run: uv sync --all-extras --dev
       - if: steps.code.outputs.present == 'true'
@@ -52,12 +54,13 @@ jobs:
     needs: unit
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - if: steps.code.outputs.present == 'true'
         run: uv sync --all-extras --dev
       - if: steps.code.outputs.present == 'true' && hashFiles('tests/integration/**') != ''
@@ -70,12 +73,13 @@ jobs:
     needs: integration
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+      - if: steps.code.outputs.present == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - if: steps.code.outputs.present == 'true'
         run: uv sync --all-extras --dev
       - if: steps.code.outputs.present == 'true' && hashFiles('tests/e2e/**') != ''
