@@ -48,3 +48,6 @@ files = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Repo root on sys.path so tests can import `examples.tictactoe` (ADR-0001):
+# it lives outside src/agent_game_framework and is never pip-installed.
+pythonpath = ["."]
