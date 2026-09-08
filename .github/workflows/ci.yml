@@ -26,7 +26,7 @@ jobs:
       - if: steps.code.outputs.present == 'true'
         run: uv run ruff check .
       - if: steps.code.outputs.present == 'true'
-        run: uv run mypy src
+        run: uv run mypy src examples
       - if: steps.code.outputs.present == 'false'
         run: echo "No pyproject.toml yet (pre-Slice-1) -- nothing to lint."
 

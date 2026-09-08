@@ -12,7 +12,7 @@ lint: ## Run ruff
 	uv run ruff check .
 
 typecheck: ## Run mypy
-	uv run mypy src
+	uv run mypy src examples
 
 test-unit: ## Run the no-infra unit test layer
 	uv run pytest tests/unit -q
