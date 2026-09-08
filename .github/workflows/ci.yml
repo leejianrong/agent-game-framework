@@ -13,12 +13,12 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
@@ -34,12 +34,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
@@ -53,12 +53,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: unit
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
@@ -72,12 +72,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: integration
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for code
         id: code
         run: echo "present=$( [ -f pyproject.toml ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
       - if: steps.code.outputs.present == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
       - if: steps.code.outputs.present == 'true'
