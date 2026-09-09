@@ -34,10 +34,12 @@ import json
 from typing import Any
 
 import httpx2
+import pytest
 
 from agent_game_framework.agents import OpenRouterBackend
 from agent_game_framework.algorithm import AdvisedLLMSeatController, AlgorithmRecommendation
-from agent_game_framework.core import SeatController, SeatDecision
+from agent_game_framework.core import Conversable, SeatController, SeatDecision
+from agent_game_framework.core.conversable import ConversationTurn, TextTurn
 from examples.tictactoe.algorithm.minimax import TicTacToeMinimaxAlgorithm
 
 
@@ -81,6 +83,19 @@ class _CapturingFakeLLM:
         self.captured_observation = observation
         self.captured_legal_actions = legal_actions
         return SeatDecision(action=self._action, banter=self._banter)
+
+    def respond(self, history: list[ConversationTurn], incoming: TextTurn) -> TextTurn:
+        return TextTurn(text=f"echo: {incoming.text}")
+
+
+class _NonConversableFakeLLM:
+    """Test-only inner ``SeatController`` that deliberately has no
+    ``respond()`` at all -- used to prove ``AdvisedLLMSeatController.respond``
+    raises a clear ``TypeError`` rather than an ``AttributeError`` when its
+    inner ``llm`` isn't itself ``Conversable``."""
+
+    def decide(self, observation: dict[str, Any], legal_actions: list[str]) -> SeatDecision[str]:
+        return SeatDecision(action=legal_actions[0])
 
 
 def test_recommend_called_exactly_once_per_decide_call_not_once_per_legal_action() -> None:
@@ -218,3 +233,35 @@ def test_advised_seat_recommendation_reaches_real_openrouter_request_body() -> N
     # strings) -- compare against the same stringified form rather than the
     # int-keyed dict the algorithm itself produced.
     assert sent_recommendation["scores"] == {str(k): v for k, v in expected_scores.items()}
+
+
+def test_respond_delegates_to_the_inner_llm_unconditionally() -> None:
+    """``AdvisedLLMSeatController.respond`` (ADR-0008/ADR-0009) is a pure
+    pass-through to the inner ``llm`` -- chat has nothing to do with the
+    algorithm at all, unlike ``decide()``."""
+    llm = _CapturingFakeLLM(action="b")
+    algorithm = _CountingFakeAlgorithm(best_action="b", rationale="pick b", scores={"a": 0.1})
+    controller = AdvisedLLMSeatController(llm=llm, algorithm=algorithm)
+    assert isinstance(controller, Conversable)
+
+    output = controller.respond(history=[], incoming=TextTurn(text="hello"))
+
+    assert output == TextTurn(text="echo: hello")
+    # Chatting never consults the algorithm at all.
+    assert algorithm.call_count == 0
+
+
+def test_respond_raises_type_error_when_inner_llm_is_not_conversable() -> None:
+    """``isinstance(controller, Conversable)`` is always ``True`` for this
+    class -- it always defines ``respond()`` itself, structurally satisfying
+    the ``@runtime_checkable`` Protocol regardless of the inner ``llm`` -- so
+    the actual guarantee this test proves is that *calling* ``respond()``
+    fails clearly (``TypeError``, naming the culprit) rather than silently
+    or with a bare ``AttributeError``, when that inner ``llm`` turns out not
+    to support chat itself."""
+    llm = _NonConversableFakeLLM()
+    algorithm = _CountingFakeAlgorithm(best_action="b", rationale="pick b", scores={"a": 0.1})
+    controller = AdvisedLLMSeatController(llm=llm, algorithm=algorithm)
+
+    with pytest.raises(TypeError):
+        controller.respond(history=[], incoming=TextTurn(text="hello"))

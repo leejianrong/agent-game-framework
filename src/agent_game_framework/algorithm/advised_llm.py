@@ -52,6 +52,12 @@ from __future__ import annotations
 from typing import Any, cast
 
 from agent_game_framework.algorithm.game_algorithm import AlgorithmRecommendation, GameAlgorithm
+from agent_game_framework.core.conversable import (
+    Conversable,
+    ConversationInput,
+    ConversationOutput,
+    ConversationTurn,
+)
 from agent_game_framework.core.seat_controller import SeatController, SeatDecision
 
 _RECOMMENDATION_KEY = "algorithm_recommendation"
@@ -146,3 +152,21 @@ class AdvisedLLMSeatController[ObservationT, ActionT]:
         )
 
         return self._llm.decide(augmented_observation, legal_actions)
+
+    def respond(
+        self, history: list[ConversationTurn], incoming: ConversationInput
+    ) -> ConversationOutput:
+        """``Conversable.respond`` (ADR-0008/ADR-0009) pass-through to the
+        inner ``llm``: a seat wrapped in this composite is exactly as
+        chattable as a bare ``llm`` seat, unconditionally, with no
+        algorithm-recommendation involvement -- chat is never advised, only
+        moves are (see this class's own docstring/module docstring). Raises
+        ``TypeError`` if ``llm`` doesn't itself implement ``Conversable``
+        (in this codebase, always an ``OpenRouterBackend`` in practice, which
+        does)."""
+        if not isinstance(self._llm, Conversable):
+            raise TypeError(
+                f"{type(self._llm).__name__} does not implement Conversable; "
+                "this seat cannot be chatted with"
+            )
+        return self._llm.respond(history, incoming)

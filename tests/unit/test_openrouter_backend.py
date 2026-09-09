@@ -14,7 +14,8 @@ import httpx2
 import pytest
 
 from agent_game_framework.agents import OpenRouterBackend, ResponseParseError
-from agent_game_framework.core import SeatController, SeatDecision
+from agent_game_framework.core import Conversable, SeatController, SeatDecision
+from agent_game_framework.core.conversable import ConversationTurn, TextTurn
 
 
 def _client_returning(handler: Any) -> httpx2.Client:
@@ -306,3 +307,95 @@ def test_openrouter_backend_satisfies_seat_controller_protocol() -> None:
     )
     decision = controller.decide({}, [0, 1, 2])
     assert isinstance(decision, SeatDecision)
+
+
+def _plain_chat_completion_response(status_code: int, content: Any) -> Any:
+    """Build a ``MockTransport`` handler returning one well-formed plain
+    chat-completions response (``choices[0].message.content``, no
+    ``tool_calls`` at all) -- the shape ``respond()`` parses, distinct from
+    ``_chat_completion_response``'s tool-call shape used by ``decide()``."""
+
+    def _handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            status_code, json={"choices": [{"message": {"content": content}}]}
+        )
+
+    return _handler
+
+
+def test_openrouter_backend_satisfies_conversable_protocol() -> None:
+    client = _client_returning(_plain_chat_completion_response(200, "hi there"))
+    controller = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini", client=client)
+    assert isinstance(controller, Conversable)
+
+
+def test_respond_parses_a_well_formed_plain_chat_response() -> None:
+    client = _client_returning(_plain_chat_completion_response(200, "good luck to you too!"))
+    backend = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini", client=client)
+
+    output = backend.respond(history=[], incoming=TextTurn(text="good luck!"))
+
+    assert output == TextTurn(text="good luck to you too!")
+
+
+def test_respond_sends_history_with_correct_roles_and_the_incoming_message_last() -> None:
+    """``"human"``/``"agent"`` roles map onto chat-completions
+    ``"user"``/``"assistant"`` roles, in order, with ``incoming`` appended
+    as the final ``"user"`` message -- never a tool/tool_choice in this
+    request, unlike ``decide()``'s."""
+    captured: dict[str, Any] = {}
+
+    def _handler(request: httpx2.Request) -> httpx2.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "sure"}}]})
+
+    client = _client_returning(_handler)
+    backend = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini", client=client)
+
+    history = [
+        ConversationTurn(role="human", content=TextTurn(text="hi")),
+        ConversationTurn(role="agent", content=TextTurn(text="hello!")),
+    ]
+    backend.respond(history=history, incoming=TextTurn(text="ready to play?"))
+
+    payload = captured["payload"]
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
+    roles_and_content = [
+        (m["role"], m["content"]) for m in payload["messages"] if m["role"] != "system"
+    ]
+    assert roles_and_content == [
+        ("user", "hi"),
+        ("assistant", "hello!"),
+        ("user", "ready to play?"),
+    ]
+
+
+def test_respond_raises_response_parse_error_on_missing_content() -> None:
+    def _handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"choices": [{"message": {}}]})
+
+    client = _client_returning(_handler)
+    backend = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini", client=client)
+
+    with pytest.raises(ResponseParseError):
+        backend.respond(history=[], incoming=TextTurn(text="hi"))
+
+
+def test_respond_raises_response_parse_error_on_non_string_content() -> None:
+    client = _client_returning(_plain_chat_completion_response(200, 12345))
+    backend = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini", client=client)
+
+    with pytest.raises(ResponseParseError):
+        backend.respond(history=[], incoming=TextTurn(text="hi"))
+
+
+def test_respond_raises_response_parse_error_on_non_json_body() -> None:
+    def _handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=b"not json at all")
+
+    client = _client_returning(_handler)
+    backend = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini", client=client)
+
+    with pytest.raises(ResponseParseError):
+        backend.respond(history=[], incoming=TextTurn(text="hi"))

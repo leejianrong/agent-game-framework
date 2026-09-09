@@ -100,18 +100,19 @@ def test_scripted_stdin_drives_a_full_win_and_final_board_matches_the_winning_li
     assert result.returncode == 0, result.stderr
     assert "Game over. Winner(s): X" in result.stdout
 
-    # The last rendered board before "Game over." is X's winning board:
+    # The last rendered board before "Game over." is X's winning board (an
+    # empty cell shows its own index, e.g. tests/unit/test_tictactoe_cli_render.py):
     #   X | X | X
     #   ---------
-    #   O | O | .
+    #   O | O | 5
     #   ---------
-    #   . | . | .
+    #   6 | 7 | 8
     board_start = result.stdout.rindex("X | X | X")
     board_block = result.stdout[board_start:]
     board_lines = [line for line in board_block.splitlines() if line.strip()]
     assert board_lines[0] == "X | X | X"
-    assert board_lines[2] == "O | O | ."
-    assert board_lines[4] == ". | . | ."
+    assert board_lines[2] == "O | O | 5"
+    assert board_lines[4] == "6 | 7 | 8"
 
 
 def test_all_bot_match_completes_with_no_stdin_interaction() -> None:

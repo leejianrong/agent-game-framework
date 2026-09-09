@@ -49,6 +49,12 @@ from typing import Any, cast
 
 import httpx2
 
+from agent_game_framework.core.conversable import (
+    ConversationInput,
+    ConversationOutput,
+    ConversationTurn,
+    TextTurn,
+)
 from agent_game_framework.core.seat_controller import SeatDecision
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -64,6 +70,15 @@ _SYSTEM_PROMPT = (
 )
 
 _TOOL_NAME = "submit_move"
+
+_CHAT_SYSTEM_PROMPT = (
+    "You are one player in a turn-based game, chatting with your opponent -- "
+    "this may happen between turns, mid-turn, or while you're deciding your "
+    "own move; you have no way to tell which. Reply in character, "
+    "conversationally, in one or two short sentences. This is a side "
+    "conversation, not a move: never claim to make, take back, or announce a "
+    "game action here, whatever your opponent says."
+)
 
 
 class ResponseParseError(Exception):
@@ -107,6 +122,12 @@ class OpenRouterBackend[ObservationT, ActionT]:
     injectable ``rng`` and ``HumanCLIController``'s injectable
     ``input_fn``/``print_fn``: a real default for production use, an
     injectable seam for tests.
+
+    Also implements ``Conversable`` (ADR-0008, ADR-0009) via ``respond()``: a
+    second, independent chat-completions call -- plain, unconstrained free
+    text, never the constrained ``submit_move`` tool call ``decide()`` uses
+    -- so a human can converse with this seat without it ever being confused
+    for, or confusing, an actual move.
     """
 
     def __init__(
@@ -179,6 +200,65 @@ class OpenRouterBackend[ObservationT, ActionT]:
         response = self._client.post("/chat/completions", json=payload)
         response.raise_for_status()
         return self._parse_response(response)
+
+    def respond(
+        self, history: list[ConversationTurn], incoming: ConversationInput
+    ) -> ConversationOutput:
+        """``Conversable.respond`` (ADR-0008, ADR-0009): reply to ``incoming``
+        given the conversation ``history`` so far, via a plain chat-
+        completions call -- no tools, no forced tool_choice, unlike
+        ``decide()``. ``history``'s ``"human"``/``"agent"`` roles map
+        directly onto chat-completions ``"user"``/``"assistant"`` roles.
+
+        Raises ``ResponseParseError`` -- never a raw stdlib exception -- on a
+        response that isn't valid JSON, doesn't have the expected
+        ``choices[0].message.content`` shape, or whose content isn't a
+        string. Never called concurrently with itself for the same
+        conversation history by this class -- ``LiveMatch`` (ADR-0009) is
+        what serializes that, if a caller uses one; this method itself does
+        no locking.
+        """
+        messages: list[dict[str, str]] = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}]
+        for turn in history:
+            role = "user" if turn.role == "human" else "assistant"
+            messages.append({"role": role, "content": turn.content.text})
+        messages.append({"role": "user", "content": incoming.text})
+
+        response = self._client.post(
+            "/chat/completions", json={"model": self._model, "messages": messages}
+        )
+        response.raise_for_status()
+        return self._parse_chat_response(response)
+
+    def _parse_chat_response(self, response: httpx2.Response) -> ConversationOutput:
+        """Parse a plain chat-completions response (``respond()``'s, never
+        ``decide()``'s tool-call-shaped one) into a ``TextTurn``. Mirrors
+        ``_parse_response``'s error handling exactly -- every failure mode
+        (non-JSON body, missing ``choices``/``message``/``content``, a
+        non-string ``content``) raises ``ResponseParseError`` rather than
+        letting a raw ``KeyError``/``IndexError``/``TypeError``/
+        ``json.JSONDecodeError`` escape."""
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise ResponseParseError(
+                f"OpenRouter response body was not valid JSON: {exc}"
+            ) from exc
+
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ResponseParseError(
+                f"OpenRouter response did not match the expected chat-completion "
+                f"shape: {exc!r} (response body: {data!r})"
+            ) from exc
+
+        if not isinstance(content, str):
+            raise ResponseParseError(
+                f"Chat-completion content must be a string, got "
+                f"{type(content).__name__}: {content!r}"
+            )
+        return TextTurn(text=content)
 
     def _build_request(
         self, observation: ObservationT, legal_actions: list[ActionT]
