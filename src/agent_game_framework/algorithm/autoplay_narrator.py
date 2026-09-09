@@ -73,6 +73,12 @@ from __future__ import annotations
 from typing import Any, cast
 
 from agent_game_framework.algorithm.game_algorithm import GameAlgorithm
+from agent_game_framework.core.conversable import (
+    Conversable,
+    ConversationInput,
+    ConversationOutput,
+    ConversationTurn,
+)
 from agent_game_framework.core.seat_controller import SeatController, SeatDecision
 
 _NARRATION_KEY = "narrated_decision"
@@ -159,3 +165,21 @@ class AutoplayNarratorSeatController[ObservationT, ActionT]:
         # algorithm's own recommendation, regardless of what the narrator
         # returned.
         return SeatDecision(action=recommendation.best_action, banter=narrator_decision.banter)
+
+    def respond(
+        self, history: list[ConversationTurn], incoming: ConversationInput
+    ) -> ConversationOutput:
+        """``Conversable.respond`` (ADR-0008/ADR-0009) pass-through to the
+        inner ``narrator_llm``: this seat's *moves* always come from
+        ``algorithm`` unconditionally (see this class's own docstring), but
+        chat is a separate capability entirely -- a human converses with the
+        narrator itself, exactly as if it were a bare ``llm`` seat. Raises
+        ``TypeError`` if ``narrator_llm`` doesn't itself implement
+        ``Conversable`` (in this codebase, always an ``OpenRouterBackend`` in
+        practice, which does)."""
+        if not isinstance(self._narrator_llm, Conversable):
+            raise TypeError(
+                f"{type(self._narrator_llm).__name__} does not implement Conversable; "
+                "this seat cannot be chatted with"
+            )
+        return self._narrator_llm.respond(history, incoming)

@@ -5,8 +5,6 @@ tested directly, cheaply, and in isolation from argparse/``Match``/stdin.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from agent_game_framework.agents import HumanCLIController, OpenRouterBackend, RandomBotController
@@ -14,11 +12,11 @@ from agent_game_framework.algorithm import AdvisedLLMSeatController, AutoplayNar
 from agent_game_framework.cli import (
     ALGORITHM_REGISTRY,
     GAME_REGISTRY,
+    RENDERER_REGISTRY,
     SeatSpecError,
     build_algorithm,
     build_controller,
     parse_seat_arg,
-    render_tictactoe_board,
 )
 
 
@@ -221,27 +219,9 @@ class TestBuildAlgorithm:
             build_algorithm(spec)
 
 
-class TestRenderTicTacToeBoard:
-    def test_empty_board_renders_all_placeholders(self) -> None:
-        board: list[Any] = [None] * 9
-        rendered = render_tictactoe_board(board)
-        lines = rendered.splitlines()
-        assert lines[0] == ". | . | ."
-        assert lines[2] == ". | . | ."
-        assert lines[4] == ". | . | ."
-        # separator matches row width
-        assert lines[1] == "-" * len(lines[0])
-        assert lines[3] == "-" * len(lines[0])
-
-    def test_mixed_board_renders_marks_row_major(self) -> None:
-        # X | O | .
-        # ---------
-        # . | X | .
-        # ---------
-        # . | . | O
-        board: list[Any] = ["X", "O", None, None, "X", None, None, None, "O"]
-        rendered = render_tictactoe_board(board)
-        lines = rendered.splitlines()
-        assert lines[0] == "X | O | ."
-        assert lines[2] == ". | X | ."
-        assert lines[4] == ". | . | O"
+def test_renderer_registry_has_exactly_tictactoe() -> None:
+    """Mirrors ``GAME_REGISTRY``/``ALGORITHM_REGISTRY``'s own such test --
+    a renderer is optional per game (see ``RENDERER_REGISTRY``'s docstring),
+    so this dict, not a hardcoded per-game branch, is what a second game
+    would extend."""
+    assert set(RENDERER_REGISTRY) == {"tictactoe"}

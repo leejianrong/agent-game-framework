@@ -45,10 +45,12 @@ import json
 from typing import Any
 
 import httpx2
+import pytest
 
 from agent_game_framework.agents import OpenRouterBackend
 from agent_game_framework.algorithm import AlgorithmRecommendation, AutoplayNarratorSeatController
-from agent_game_framework.core import SeatController, SeatDecision
+from agent_game_framework.core import Conversable, SeatController, SeatDecision
+from agent_game_framework.core.conversable import ConversationTurn, TextTurn
 from examples.tictactoe.algorithm.minimax import TicTacToeMinimaxAlgorithm
 
 
@@ -97,6 +99,19 @@ class _CapturingFakeNarrator:
         self.captured_observation = observation
         self.captured_legal_actions = legal_actions
         return SeatDecision(action=self._action, banter=self._banter)
+
+    def respond(self, history: list[ConversationTurn], incoming: TextTurn) -> TextTurn:
+        return TextTurn(text=f"echo: {incoming.text}")
+
+
+class _NonConversableFakeNarrator:
+    """Test-only ``narrator_llm`` with no ``respond()`` at all -- proves
+    ``AutoplayNarratorSeatController.respond`` raises a clear ``TypeError``
+    rather than an ``AttributeError`` when its inner narrator isn't itself
+    ``Conversable``."""
+
+    def decide(self, observation: dict[str, Any], legal_actions: list[str]) -> SeatDecision[str]:
+        return SeatDecision(action=legal_actions[0])
 
 
 def test_recommend_called_exactly_once_per_decide_call_not_once_per_legal_action() -> None:
@@ -277,3 +292,32 @@ def test_autoplay_narrator_reaches_real_openrouter_request_body_and_ignores_its_
     tool = captured_requests[0]["tools"][0]
     action_schema = tool["function"]["parameters"]["properties"]["action"]
     assert action_schema["enum"] == [0]
+
+
+def test_respond_delegates_to_the_narrator_llm_unconditionally() -> None:
+    """``AutoplayNarratorSeatController.respond`` (ADR-0008/ADR-0009) is a
+    pure pass-through to ``narrator_llm`` -- chat has nothing to do with the
+    algorithm, exactly like the "moves" side has nothing to do with the
+    narrator's own text output (this controller's whole point)."""
+    algorithm = _CountingFakeAlgorithm(best_action="a", rationale="a is best", scores={"a": 1.0})
+    narrator = _CapturingFakeNarrator()
+    controller = AutoplayNarratorSeatController(algorithm=algorithm, narrator_llm=narrator)
+    assert isinstance(controller, Conversable)
+
+    output = controller.respond(history=[], incoming=TextTurn(text="hello"))
+
+    assert output == TextTurn(text="echo: hello")
+    assert algorithm.call_count == 0
+
+
+def test_respond_raises_type_error_when_narrator_is_not_conversable() -> None:
+    """See the analogous test in ``test_advised_llm_seat_controller.py`` for
+    why this doesn't also assert ``isinstance(controller, Conversable)`` is
+    ``False`` -- it's always ``True`` for this class, structurally; the
+    actual guarantee is that calling ``respond()`` fails clearly."""
+    algorithm = _CountingFakeAlgorithm(best_action="a", rationale="a is best", scores={"a": 1.0})
+    narrator = _NonConversableFakeNarrator()
+    controller = AutoplayNarratorSeatController(algorithm=algorithm, narrator_llm=narrator)
+
+    with pytest.raises(TypeError):
+        controller.respond(history=[], incoming=TextTurn(text="hello"))

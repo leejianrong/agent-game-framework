@@ -48,18 +48,27 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 BANTER = "mocked LLM banter"
-"""Fixed, assertable banter string every mocked response returns, so an e2e
-test can assert on it without caring which turn produced it."""
+"""Fixed, assertable banter string every mocked move-decision response
+returns, so an e2e test can assert on it without caring which turn produced
+it."""
+
+CHAT_REPLY = "mocked LLM chat reply"
+"""Fixed, assertable reply string every mocked chat (``Conversable.respond``,
+ADR-0008/ADR-0009) request returns -- distinct from ``BANTER`` so a test can
+tell a printed chat reply apart from a move's banter line."""
 
 
 class _Handler(BaseHTTPRequestHandler):
     """Answers every POST (any path) with a well-formed chat-completions
-    tool-call response, mirroring the exact JSON shape used by
-    ``tests/unit/test_openrouter_backend.py``'s ``_chat_completion_response``
-    / ``tests/integration/test_match_agent_errors.py``'s
-    ``_tool_call_response`` helpers -- ``OpenRouterBackend._parse_response``
-    walks ``choices[0].message.tool_calls[0].function.arguments`` (a
-    JSON-encoded string), so that's exactly what's built here.
+    response, mirroring the exact JSON shapes used by
+    ``tests/unit/test_openrouter_backend.py``: a move-``decide()`` request
+    carries a ``"tools"`` key (``OpenRouterBackend._build_request``'s
+    constrained ``submit_move`` tool-call, walked back by
+    ``_parse_response``), while a chat-``respond()`` request has no
+    ``"tools"`` at all (``OpenRouterBackend.respond``'s plain,
+    unconstrained call, walked back by ``_parse_chat_response``) -- so which
+    shaped response to send back is decided by that one structural
+    difference in the incoming request body, not by guessing at call order.
     """
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -72,12 +81,13 @@ class _Handler(BaseHTTPRequestHandler):
         raw_body = self.rfile.read(content_length) if content_length else b"{}"
         body = json.loads(raw_body) if raw_body else {}
 
-        legal_actions = body["tools"][0]["function"]["parameters"]["properties"]["action"]["enum"]
-        chosen_action = legal_actions[0]
-
-        arguments = json.dumps({"action": chosen_action, "banter": BANTER})
-        response_body = json.dumps(
-            {
+        if "tools" in body:
+            legal_actions = body["tools"][0]["function"]["parameters"]["properties"]["action"][
+                "enum"
+            ]
+            chosen_action = legal_actions[0]
+            arguments = json.dumps({"action": chosen_action, "banter": BANTER})
+            response_json: dict[str, Any] = {
                 "choices": [
                     {
                         "message": {
@@ -93,7 +103,10 @@ class _Handler(BaseHTTPRequestHandler):
                     }
                 ]
             }
-        ).encode("utf-8")
+        else:
+            response_json = {"choices": [{"message": {"content": CHAT_REPLY}}]}
+
+        response_body = json.dumps(response_json).encode("utf-8")
 
         server = self.server
         if isinstance(server, MockOpenRouterServer):

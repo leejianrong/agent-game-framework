@@ -84,7 +84,7 @@ def test_illegal_action_from_submit_action_does_not_advance_the_turn() -> None:
     match: Match[Any, int, Any] = Match(engine, players=["X", "O"], seats=seats)
 
     messages: list[str] = []
-    run_match(match, game_name="tictactoe", json_mode=False, print_fn=_recording_print_fn(messages))
+    run_match(match, json_mode=False, print_fn=_recording_print_fn(messages))
 
     assert any("Illegal move by X" in line for line in messages)
     assert match.is_terminal()
@@ -108,7 +108,6 @@ def test_illegal_action_message_names_the_offending_seat_and_does_not_crash() ->
     messages: list[str] = []
     run_match(
         match,
-        game_name="tictactoe",
         json_mode=False,
         print_fn=_recording_print_fn(messages),
     )
@@ -133,7 +132,6 @@ def test_illegal_action_in_json_mode_emits_a_json_line_not_the_board() -> None:
     lines: list[str] = []
     run_match(
         match,
-        game_name="tictactoe",
         json_mode=True,
         print_fn=_recording_print_fn(lines),
     )
@@ -167,7 +165,7 @@ def test_banter_is_rendered_alongside_the_move_in_text_mode() -> None:
     )
 
     messages: list[str] = []
-    run_match(match, game_name="tictactoe", json_mode=False, print_fn=_recording_print_fn(messages))
+    run_match(match, json_mode=False, print_fn=_recording_print_fn(messages))
 
     assert any('X plays 0  ("taking the corner!")' in line for line in messages)
     assert any('O plays 1  ("blocking...")' in line for line in messages)
@@ -193,7 +191,7 @@ def test_banter_is_rendered_as_a_non_null_json_field_in_json_mode() -> None:
     )
 
     lines: list[str] = []
-    run_match(match, game_name="tictactoe", json_mode=True, print_fn=_recording_print_fn(lines))
+    run_match(match, json_mode=True, print_fn=_recording_print_fn(lines))
 
     turn_events = [json.loads(line) for line in lines if json.loads(line)["type"] == "turn"]
     assert [event["banter"] for event in turn_events] == [
