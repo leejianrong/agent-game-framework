@@ -26,6 +26,21 @@ just a difference in *which* ``SeatController`` sits in the ``seats``
 mapping -- ``play_turn()``/``run_to_completion()`` never branch on that,
 so a 1-human/N-agent match and an all-AI (0-human) match are the exact same
 code path with a different configuration.
+
+As of KAN-1285 (SLICES.md V3 step 2), ``play_turn()`` also handles a
+``controller.decide()`` call that itself *raises*, as opposed to returning a
+well-formed-but-illegal ``SeatDecision`` (that latter case is
+``IllegalActionError``'s territory -- see ``submit_action`` -- and is
+unchanged by this ticket). This module deliberately catches that failure via
+a broad ``except Exception``, never by importing and naming a specific
+controller's exception type (e.g. ``agent_game_framework.agents.openrouter``'s
+``ResponseParseError``, or an ``httpx2`` network exception): ``core`` must
+never import from ``agents`` (ADR-0001's package-boundary layering -- the
+core contract can't know concrete controllers exist, or every new
+``SeatController`` implementation would require a ``core`` change to be
+handled). This also keeps the handling controller-implementation-agnostic
+per ADR-0005: a seat's failure is never treated differently because of
+*which* ``SeatController`` sits behind it.
 """
 
 from __future__ import annotations
@@ -34,7 +49,11 @@ from collections.abc import Callable
 from typing import Any
 
 from agent_game_framework.core.engine import GameEngine, IllegalActionError, PlayerId
-from agent_game_framework.core.seat_controller import SeatController, SeatDecision
+from agent_game_framework.core.seat_controller import (
+    AgentTimeoutError,
+    SeatController,
+    SeatDecision,
+)
 
 
 class Match[StateT, ActionT, ObservationT]:
@@ -128,6 +147,7 @@ class Match[StateT, ActionT, ObservationT]:
         on_illegal_action: (
             Callable[[PlayerId, SeatDecision[ActionT], IllegalActionError], None] | None
         ) = None,
+        on_agent_error: Callable[[PlayerId, Exception], None] | None = None,
     ) -> None:
         """Drive one round of ``current_players()`` through their seat controllers.
 
@@ -160,6 +180,37 @@ class Match[StateT, ActionT, ObservationT]:
         - if not given, the ``IllegalActionError`` propagates to the
           caller, who may catch it and retry by calling ``play_turn()``
           again -- state is unchanged, so the same player is still up.
+
+        This is a **different, unbounded, caller-driven** retry contract
+        than the one below for a controller that raises: ``on_illegal_action``
+        exists because, in normal operation, a well-behaved
+        ``SeatController`` should never actually trigger it (see
+        ``HumanCLIController``, which re-prompts internally until it gets a
+        legal move) -- it is a defensive, uniform-across-controller-kinds
+        path, not a policy this method enforces a cap on. Do not add a
+        bounded-retry cap to *this* path; that would special-case AI-backed
+        seats, contradicting ADR-0005's "never handled differently because
+        the seat happens to be human."
+
+        ``controller.decide()`` itself may raise (SLICES.md V3 step 2,
+        KAN-1285) instead of returning -- e.g. an ``OpenRouterBackend``
+        seeing an HTTP timeout, or a response it can't parse into a
+        ``SeatDecision`` at all. Since nothing has been submitted yet at
+        that point, ``Match``'s state is untouched either way. On such a
+        failure, ``play_turn`` retries **exactly once**, immediately,
+        reusing the same already-fetched ``observation``/``legal_actions``
+        (state hasn't changed, so there's nothing to refetch). If given,
+        ``on_agent_error(player, exc)`` is called after each failed attempt
+        -- a reporting hook only, mirroring ``on_illegal_action``'s shape
+        but never altering control flow: whether or not it is given, a
+        second consecutive failure always raises ``AgentTimeoutError``
+        (chained from that second exception via ``__cause__``) out of this
+        method. Unlike the ``IllegalActionError``/``on_illegal_action`` path
+        above, there is no continue-the-round option here: this is a
+        brand-new failure mode with no pre-existing hook contract to
+        preserve, and an unbounded retry on a controller that cannot
+        produce a decision at all would hang the turn loop rather than
+        merely re-ask a well-behaved controller for a different move.
         """
         if self._seats is None:
             raise ValueError(
@@ -176,7 +227,9 @@ class Match[StateT, ActionT, ObservationT]:
                 )
             observation = self.observation_for(player)
             legal_actions = self.legal_actions(player)
-            decision = controller.decide(observation, legal_actions)
+            decision = self._decide_with_one_retry(
+                controller, player, observation, legal_actions, on_agent_error
+            )
 
             try:
                 self.submit_action(player, decision.action)
@@ -189,6 +242,39 @@ class Match[StateT, ActionT, ObservationT]:
             if on_turn is not None:
                 on_turn(player, decision)
 
+    def _decide_with_one_retry(
+        self,
+        controller: SeatController[ObservationT, ActionT],
+        player: PlayerId,
+        observation: ObservationT,
+        legal_actions: list[ActionT],
+        on_agent_error: Callable[[PlayerId, Exception], None] | None,
+    ) -> SeatDecision[ActionT]:
+        """Call ``controller.decide()``, retrying exactly once on any
+        exception, then raising ``AgentTimeoutError`` if the retry also
+        fails. See ``play_turn``'s docstring for the full policy this
+        implements; split out only to keep ``play_turn``'s per-player loop
+        readable.
+
+        Deliberately catches ``Exception`` broadly, never a specific
+        controller's exception type -- see this module's docstring for why
+        (``core`` must never import from ``agents``).
+        """
+        try:
+            return controller.decide(observation, legal_actions)
+        except Exception as first_exc:
+            if on_agent_error is not None:
+                on_agent_error(player, first_exc)
+            try:
+                return controller.decide(observation, legal_actions)
+            except Exception as second_exc:
+                if on_agent_error is not None:
+                    on_agent_error(player, second_exc)
+                raise AgentTimeoutError(
+                    f"SeatController for player {player!r} failed to produce a "
+                    f"decision after 1 retry: {second_exc!r}"
+                ) from second_exc
+
     def run_to_completion(
         self,
         *,
@@ -196,6 +282,7 @@ class Match[StateT, ActionT, ObservationT]:
         on_illegal_action: (
             Callable[[PlayerId, SeatDecision[ActionT], IllegalActionError], None] | None
         ) = None,
+        on_agent_error: Callable[[PlayerId, Exception], None] | None = None,
     ) -> None:
         """Drive the match to completion, calling ``play_turn()`` repeatedly
         until ``is_terminal()``.
@@ -203,13 +290,23 @@ class Match[StateT, ActionT, ObservationT]:
         A thin loop over ``play_turn()`` -- see its docstring for the full
         seat-map/hook contract, which applies identically here. Deliberately
         has no knowledge of any particular connector (no ``print``, no JSON
-        formatting): a connector supplies ``on_turn``/``on_illegal_action``
-        to react (render a board, emit a JSON line, report an error) after
-        each turn, keeping ``Match`` the sole owner of turn-loop mechanics
-        (PLAN.md Shape S2) and the connector the sole owner of presentation
-        (ADR-0006) -- the same hooks are reusable, unchanged, by a future
-        MCP connector (KAN-1281+) that wants to drive this exact loop with
-        different reactions.
+        formatting): a connector supplies ``on_turn``/``on_illegal_action``/
+        ``on_agent_error`` to react (render a board, emit a JSON line, report
+        an error) after each turn, keeping ``Match`` the sole owner of
+        turn-loop mechanics (PLAN.md Shape S2) and the connector the sole
+        owner of presentation (ADR-0006) -- the same hooks are reusable,
+        unchanged, by a future MCP connector (KAN-1281+) that wants to drive
+        this exact loop with different reactions.
+
+        This loop itself needed no change for the bounded-retry-then-
+        ``AgentTimeoutError`` behavior (KAN-1285): that policy lives entirely
+        inside ``play_turn()``, so ``AgentTimeoutError`` simply propagates
+        out of this ``while`` loop exactly like an uncaught
+        ``IllegalActionError`` already could.
         """
         while not self.is_terminal():
-            self.play_turn(on_turn=on_turn, on_illegal_action=on_illegal_action)
+            self.play_turn(
+                on_turn=on_turn,
+                on_illegal_action=on_illegal_action,
+                on_agent_error=on_agent_error,
+            )

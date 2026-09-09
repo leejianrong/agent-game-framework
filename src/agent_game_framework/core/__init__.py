@@ -13,9 +13,14 @@ from __future__ import annotations
 
 from agent_game_framework.core.engine import GameEngine, IllegalActionError, PlayerId
 from agent_game_framework.core.match import Match
-from agent_game_framework.core.seat_controller import SeatController, SeatDecision
+from agent_game_framework.core.seat_controller import (
+    AgentTimeoutError,
+    SeatController,
+    SeatDecision,
+)
 
 __all__ = [
+    "AgentTimeoutError",
     "GameEngine",
     "IllegalActionError",
     "Match",
