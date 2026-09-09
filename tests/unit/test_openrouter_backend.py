@@ -248,6 +248,55 @@ def test_constructor_reads_api_key_from_environment(monkeypatch: pytest.MonkeyPa
     assert backend is not None
 
 
+def test_constructor_uses_default_base_url_when_no_override_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No explicit ``base_url``, no ``OPENROUTER_BASE_URL`` in the
+    environment: the internally-built client must target the real
+    ``_DEFAULT_BASE_URL`` -- proving the new env-var override (KAN-1287) is
+    additive and doesn't change existing behavior when unset."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    backend = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini")
+
+    # httpx2.URL normalizes a bare-path base_url with a trailing slash --
+    # compare with rstrip so this test doesn't depend on that formatting
+    # detail.
+    assert str(backend._client.base_url).rstrip("/") == "https://openrouter.ai/api/v1"
+
+
+def test_constructor_reads_base_url_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``OPENROUTER_BASE_URL`` overrides the default endpoint when no
+    explicit ``base_url``/``client`` is given -- this is the seam a
+    subprocess-based e2e test (``tests/e2e/test_cli_llm_seat.py``) relies on
+    to point a real, installed ``agf`` subprocess's ``OpenRouterBackend`` at
+    a local mock HTTP server, since ``client=...``/``httpx2.MockTransport``
+    only intercepts calls made in the *same* process as the test and cannot
+    reach into a separate subprocess at all."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:9999")
+
+    backend = OpenRouterBackend[dict[str, Any], int](model="openai/gpt-4o-mini")
+
+    assert str(backend._client.base_url).rstrip("/") == "http://127.0.0.1:9999"
+
+
+def test_explicit_base_url_argument_takes_priority_over_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit ``base_url=`` argument wins over ``OPENROUTER_BASE_URL``,
+    exactly like ``api_key=`` already wins over ``OPENROUTER_API_KEY``."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:9999")
+
+    backend = OpenRouterBackend[dict[str, Any], int](
+        model="openai/gpt-4o-mini", base_url="http://127.0.0.1:8888"
+    )
+
+    assert str(backend._client.base_url).rstrip("/") == "http://127.0.0.1:8888"
+
+
 def test_openrouter_backend_satisfies_seat_controller_protocol() -> None:
     client = _client_returning(
         _chat_completion_response(200, {"action": 1, "banter": "hi"})
