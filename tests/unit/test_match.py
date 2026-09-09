@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from agent_game_framework.core import IllegalActionError, Match, SeatDecision
+from agent_game_framework.core import AgentTimeoutError, IllegalActionError, Match, SeatDecision
 
 if TYPE_CHECKING:
     from conftest import CounterEngine, CounterMatch
@@ -206,6 +206,105 @@ class TestPlayTurn:
         # re-asks A rather than silently advancing to B.
         assert match.serialize() == before
         assert match.current_players() == ["A"]
+
+
+class _RaisingOnceController:
+    """A ``SeatController`` test double whose ``decide()`` raises ``exc`` on
+    its first call, then returns ``SeatDecision(action=action)`` on every
+    call after that -- proves ``Match``'s bounded-retry-then-succeed path
+    (KAN-1285): a controller that failed once but recovers on the immediate
+    retry never surfaces ``AgentTimeoutError`` at all.
+    """
+
+    def __init__(self, action: str, exc: Exception) -> None:
+        self._action = action
+        self._exc = exc
+        self.calls = 0
+
+    def decide(self, observation: Any, legal_actions: list[str]) -> SeatDecision[str]:
+        self.calls += 1
+        if self.calls == 1:
+            raise self._exc
+        return SeatDecision(action=self._action)
+
+
+class _AlwaysRaisingController:
+    """A ``SeatController`` test double whose ``decide()`` always raises --
+    proves ``Match`` gives up after exactly one retry and raises
+    ``AgentTimeoutError`` rather than retrying unboundedly or hanging
+    (KAN-1285). ``exc_factory`` is called fresh each time so a test can
+    assert on which of the two distinct exception instances ended up
+    chained as ``AgentTimeoutError.__cause__``.
+    """
+
+    def __init__(self, exc_factory: Callable[[], Exception]) -> None:
+        self._exc_factory = exc_factory
+        self.calls = 0
+
+    def decide(self, observation: Any, legal_actions: list[str]) -> SeatDecision[str]:
+        self.calls += 1
+        raise self._exc_factory()
+
+
+class TestPlayTurnAgentErrors:
+    """``Match.play_turn``'s handling of a ``SeatController.decide()`` call
+    that itself *raises* (KAN-1285, SLICES.md V3 step 2) -- a distinct
+    failure mode from ``TestPlayTurn`` above, which covers a well-formed but
+    *returned* illegal action (``IllegalActionError``/``on_illegal_action``).
+    Here, no ``SeatDecision`` is ever produced at all, so nothing is ever
+    submitted; ``Match``'s bounded retry-once-then-``AgentTimeoutError``
+    policy is new production code this ticket adds, unlike the
+    ``on_illegal_action`` path, which this class deliberately does not
+    touch.
+    """
+
+    def test_retries_once_and_succeeds_on_the_second_decide_call(
+        self, counter_engine: CounterEngine
+    ) -> None:
+        controller = _RaisingOnceController(INC, RuntimeError("simulated network timeout"))
+        seats = {"A": controller, "B": _FixedController(INC)}
+        match: CounterMatch = Match(counter_engine, players=["A", "B"], seats=seats)
+
+        match.play_turn()  # must not raise -- the retry recovers.
+
+        assert controller.calls == 2
+        assert match.current_players() == ["B"]
+
+    def test_raises_agent_timeout_error_chained_from_the_second_exception_when_both_fail(
+        self, counter_engine: CounterEngine
+    ) -> None:
+        exceptions = iter([RuntimeError("first failure"), RuntimeError("second failure")])
+        controller = _AlwaysRaisingController(lambda: next(exceptions))
+        seats = {"A": controller, "B": _FixedController(INC)}
+        match: CounterMatch = Match(counter_engine, players=["A", "B"], seats=seats)
+        before = match.serialize()
+
+        with pytest.raises(AgentTimeoutError) as exc_info:
+            match.play_turn()
+
+        assert controller.calls == 2
+        # Chained via `raise AgentTimeoutError(...) from exc` -- the second
+        # (not first) attempt's exception, never lost.
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert str(exc_info.value.__cause__) == "second failure"
+        # Nothing was ever submitted: state is completely unchanged and the
+        # same player is still up, exactly like an uncaught IllegalActionError.
+        assert match.serialize() == before
+        assert match.current_players() == ["A"]
+
+    def test_on_agent_error_hook_fires_for_each_failed_attempt_but_never_suppresses_the_error(
+        self, counter_engine: CounterEngine
+    ) -> None:
+        exceptions = iter([RuntimeError("first failure"), RuntimeError("second failure")])
+        controller = _AlwaysRaisingController(lambda: next(exceptions))
+        seats = {"A": controller, "B": _FixedController(INC)}
+        match: CounterMatch = Match(counter_engine, players=["A", "B"], seats=seats)
+
+        calls: list[tuple[str, str]] = []
+        with pytest.raises(AgentTimeoutError):
+            match.play_turn(on_agent_error=lambda player, exc: calls.append((player, str(exc))))
+
+        assert calls == [("A", "first failure"), ("A", "second failure")]
 
 
 class TestRunToCompletion:

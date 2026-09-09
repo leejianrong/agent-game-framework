@@ -19,6 +19,14 @@ drives through this exact same code path as a mixed human/bot match -- "how
 many humans" is only a difference in which controllers land in the seat map
 handed to ``Match``, per R1/ADR-0005.
 
+``cmd_play`` also catches ``AgentTimeoutError`` (SLICES.md V3 step 2,
+KAN-1285): a seat's controller (e.g. an ``OpenRouterBackend`` seeing a
+network timeout, or twice failing to produce a parseable response) that
+failed entirely to produce a decision, even after ``Match``'s internal
+reject-and-reprompt-once retry. Reported via ``print_fn`` with a non-zero
+exit code, the same as this module's other pre-existing usage/construction
+error paths -- never a raw, uncaught traceback.
+
 Only Tic-Tac-Toe (``examples.tictactoe``, KAN-1277) is registered as a
 playable game for now -- see ``GAME_REGISTRY``. That engine lives outside
 ``src/`` per ADR-0001 (a throwaway reference implementation, not part of the
@@ -43,6 +51,7 @@ from typing import Any
 from agent_game_framework import __version__
 from agent_game_framework.agents import HumanCLIController, RandomBotController
 from agent_game_framework.core import (
+    AgentTimeoutError,
     GameEngine,
     IllegalActionError,
     Match,
@@ -171,6 +180,15 @@ def run_match(
 
     Turn output (rendered board or ``--json`` envelope) is only printed after
     a *successful* ``submit_action`` call.
+
+    ``Match.run_to_completion`` may also raise ``AgentTimeoutError``
+    (SLICES.md V3 step 2, KAN-1285): a seat's controller failed to produce a
+    decision at all -- twice in a row, after ``Match``'s internal
+    reject-and-reprompt-once retry -- rather than returning a
+    well-formed-but-illegal action. This function deliberately does **not**
+    catch it here; it propagates to ``cmd_play``, which is where every other
+    match-ending/usage-error message in this module is decided (unknown
+    game, bad ``--seat`` spec) and where the process's exit code is chosen.
     """
 
     def on_turn(player: PlayerId, decision: SeatDecision[Any]) -> None:
@@ -229,6 +247,16 @@ def cmd_play(args: argparse.Namespace, *, print_fn: Callable[..., None] = print)
     Any ``--seat``/game-construction problem is reported and exits non-zero
     *before* the match starts -- it is a CLI-usage error, not a game-rule
     one.
+
+    If ``run_match`` propagates ``AgentTimeoutError`` (a seat's controller
+    failed twice in a row to produce a decision at all, SLICES.md V3 step 2,
+    KAN-1285), this is caught here -- the same category of failure this
+    function already guards against for ``SeatSpecError``/unknown-game/
+    ``ValueError`` at match construction -- and reported via ``print_fn``
+    (a JSON ``"agent_error"`` envelope in ``--json`` mode, matching the
+    style of ``run_match``'s ``"illegal_action"``/``"result"`` envelopes;
+    plain text otherwise) with a non-zero exit code, instead of letting a
+    raw traceback crash the CLI mid-game.
     """
     if args.game not in GAME_REGISTRY:
         print_fn(f"Unknown game {args.game!r}; available games: {sorted(GAME_REGISTRY)}")
@@ -260,7 +288,14 @@ def cmd_play(args: argparse.Namespace, *, print_fn: Callable[..., None] = print)
         print_fn(f"Cannot start {args.game!r} with seats {order!r}: {exc}")
         return 2
 
-    run_match(match, game_name=args.game, json_mode=args.json, print_fn=print_fn)
+    try:
+        run_match(match, game_name=args.game, json_mode=args.json, print_fn=print_fn)
+    except AgentTimeoutError as exc:
+        if args.json:
+            print_fn(json.dumps({"type": "agent_error", "error": str(exc)}))
+        else:
+            print_fn(f"Agent seat failed to respond: {exc}")
+        return 3
     return 0
 
 
