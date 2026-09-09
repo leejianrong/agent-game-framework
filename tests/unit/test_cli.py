@@ -10,9 +10,12 @@ from typing import Any
 import pytest
 
 from agent_game_framework.agents import HumanCLIController, OpenRouterBackend, RandomBotController
+from agent_game_framework.algorithm import AdvisedLLMSeatController, AutoplayNarratorSeatController
 from agent_game_framework.cli import (
+    ALGORITHM_REGISTRY,
     GAME_REGISTRY,
     SeatSpecError,
+    build_algorithm,
     build_controller,
     parse_seat_arg,
     render_tictactoe_board,
@@ -105,6 +108,117 @@ class TestBuildController:
 
         with pytest.raises(SeatSpecError):
             build_controller("llm:openrouter/openai/gpt-4o-mini")
+
+    # -- V4 modifier specs (SLICES.md V4 step 5, KAN-1291) --------------
+
+    def test_advised_by_modifier_builds_advised_llm_seat_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from examples.tictactoe.algorithm import TicTacToeMinimaxAlgorithm
+
+        # No HTTP mocking needed -- constructing OpenRouterBackend alone
+        # makes no network call, exactly like the plain llm:openrouter/...
+        # test above.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+
+        controller = build_controller(
+            "llm:openrouter/openai/gpt-4o-mini:advised-by=algo:tictactoe-minimax"
+        )
+
+        assert isinstance(controller, AdvisedLLMSeatController)
+        assert isinstance(controller._llm, OpenRouterBackend)
+        assert controller._llm._model == "openai/gpt-4o-mini"
+        assert isinstance(controller._algorithm, TicTacToeMinimaxAlgorithm)
+
+    def test_narrated_by_modifier_builds_autoplay_narrator_seat_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from examples.tictactoe.algorithm import TicTacToeMinimaxAlgorithm
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+
+        controller = build_controller(
+            "algo:tictactoe-minimax:narrated-by=llm:openrouter/openai/gpt-4o-mini"
+        )
+
+        assert isinstance(controller, AutoplayNarratorSeatController)
+        assert isinstance(controller._algorithm, TicTacToeMinimaxAlgorithm)
+        assert isinstance(controller._narrator_llm, OpenRouterBackend)
+        assert controller._narrator_llm._model == "openai/gpt-4o-mini"
+
+    def test_plain_llm_spec_without_a_modifier_is_unaffected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Confirms the modifier-detection code added on top of the existing
+        # llm:openrouter/... branch does not change its behavior at all when
+        # no ':advised-by='/':narrated-by=' substring is present.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+
+        controller = build_controller("llm:openrouter/openai/gpt-4o-mini")
+
+        assert isinstance(controller, OpenRouterBackend)
+        assert controller._model == "openai/gpt-4o-mini"
+
+    def test_advised_by_with_unknown_algorithm_name_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+
+        with pytest.raises(SeatSpecError):
+            build_controller("llm:openrouter/openai/gpt-4o-mini:advised-by=algo:no-such-algo")
+
+    def test_advised_by_with_missing_algo_prefix_in_modifier_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+
+        with pytest.raises(SeatSpecError):
+            build_controller("llm:openrouter/openai/gpt-4o-mini:advised-by=tictactoe-minimax")
+
+    def test_advised_by_with_no_algo_spec_at_all_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+
+        with pytest.raises(SeatSpecError):
+            build_controller("llm:openrouter/openai/gpt-4o-mini:advised-by=")
+
+    def test_advised_by_with_no_base_spec_raises(self) -> None:
+        with pytest.raises(SeatSpecError):
+            build_controller(":advised-by=algo:tictactoe-minimax")
+
+    def test_narrated_by_with_bad_nested_llm_spec_raises(self) -> None:
+        with pytest.raises(SeatSpecError):
+            build_controller("algo:tictactoe-minimax:narrated-by=llm:anthropic/claude-3.5-sonnet")
+
+    def test_narrated_by_with_missing_algo_prefix_in_base_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+
+        with pytest.raises(SeatSpecError):
+            build_controller("tictactoe-minimax:narrated-by=llm:openrouter/openai/gpt-4o-mini")
+
+
+class TestBuildAlgorithm:
+    def test_known_algo_spec_builds_tictactoe_minimax_algorithm(self) -> None:
+        from examples.tictactoe.algorithm import TicTacToeMinimaxAlgorithm
+
+        algorithm = build_algorithm("algo:tictactoe-minimax")
+
+        assert isinstance(algorithm, TicTacToeMinimaxAlgorithm)
+
+    def test_algorithm_registry_has_exactly_tictactoe_minimax(self) -> None:
+        assert set(ALGORITHM_REGISTRY) == {"tictactoe-minimax"}
+
+    def test_unknown_algorithm_name_raises(self) -> None:
+        with pytest.raises(SeatSpecError):
+            build_algorithm("algo:no-such-algo")
+
+    @pytest.mark.parametrize("spec", ["tictactoe-minimax", "", "bot:random"])
+    def test_missing_algo_prefix_raises(self, spec: str) -> None:
+        with pytest.raises(SeatSpecError):
+            build_algorithm(spec)
 
 
 class TestRenderTicTacToeBoard:

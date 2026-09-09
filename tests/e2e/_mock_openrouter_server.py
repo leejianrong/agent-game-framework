@@ -98,6 +98,7 @@ class _Handler(BaseHTTPRequestHandler):
         server = self.server
         if isinstance(server, MockOpenRouterServer):
             server.request_count += 1
+            server.received_requests.append(body)
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -121,17 +122,32 @@ class MockOpenRouterServer(HTTPServer):
     to something else -- an extra guardrail on top of the structural
     guarantee that this server only ever binds to ``127.0.0.1``.
 
+    ``received_requests`` (KAN-1291, SLICES.md V4) additionally retains every
+    decoded JSON request body this server has received, in arrival order --
+    not just a count -- so a test can inspect *what* was actually sent (e.g.
+    whether an advised seat's outgoing user-message content carried an
+    ``"algorithm_recommendation"`` key, versus a plain unadvised seat's
+    which never does). Appended to from ``do_POST``, which always runs on
+    this server's single background serving thread strictly before it writes
+    the response back to the client -- so by the time
+    ``subprocess.run(...)`` has returned (the subprocess can only exit after
+    every response it was waiting on has been received), every request it
+    made has already been appended here; safe to read from the test's main
+    thread with no extra synchronization.
+
     Usage::
 
         with MockOpenRouterServer() as server:
             env = {**base_env, "OPENROUTER_BASE_URL": server.base_url}
             subprocess.run(["agf", "play", ...], env=env, ...)
             assert server.request_count >= 1
+            assert server.received_requests  # full decoded request bodies
     """
 
     def __init__(self) -> None:
         super().__init__(("127.0.0.1", 0), _Handler)
         self.request_count = 0
+        self.received_requests: list[dict[str, Any]] = []
         self._thread: threading.Thread | None = None
 
     @property
