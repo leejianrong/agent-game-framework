@@ -38,18 +38,31 @@ def _recording_print_fn(sink: list[str]) -> Any:
 
 class _ScriptedController:
     """A ``SeatController`` fake that returns a fixed, pre-scripted sequence
-    of actions on each ``decide()`` call, regardless of ``legal_actions`` --
-    including actions the engine will reject, so tests can force
-    ``Match.submit_action`` to raise ``IllegalActionError`` on demand.
+    of actions (and, optionally, banter strings) on each ``decide()`` call,
+    regardless of ``legal_actions`` -- including actions the engine will
+    reject, so tests can force ``Match.submit_action`` to raise
+    ``IllegalActionError`` on demand.
+
+    ``banters``, when given, is zipped 1:1 against ``actions`` (KAN-1286):
+    this is the fake used to prove ``run_match``'s banter-rendering path --
+    which the CLI has carried since KAN-1279/1280 but which no real
+    controller (``HumanCLIController``/``RandomBotController``) has ever
+    exercised with non-``None`` banter -- actually renders a non-``None``
+    ``SeatDecision.banter`` in both text and ``--json`` output. Omitting
+    ``banters`` (the pre-existing behavior) means every decision carries no
+    banter, as before.
     """
 
-    def __init__(self, actions: list[int]) -> None:
+    def __init__(self, actions: list[int], banters: list[str | None] | None = None) -> None:
         self._actions: Iterator[int] = iter(actions)
+        self._banters: Iterator[str | None] = iter(
+            banters if banters is not None else [None] * len(actions)
+        )
         self.calls = 0
 
     def decide(self, observation: Any, legal_actions: list[int]) -> SeatDecision[int]:
         self.calls += 1
-        return SeatDecision(action=next(self._actions))
+        return SeatDecision(action=next(self._actions), banter=next(self._banters))
 
 
 def test_illegal_action_from_submit_action_does_not_advance_the_turn() -> None:
@@ -134,3 +147,59 @@ def test_illegal_action_in_json_mode_emits_a_json_line_not_the_board() -> None:
     result_events = [event for event in parsed if event["type"] == "result"]
     assert len(result_events) == 1
     assert result_events[0]["winners"] == ["X"]
+
+
+def test_banter_is_rendered_alongside_the_move_in_text_mode() -> None:
+    """``run_match``'s ``on_turn`` closure has printed a ``' ("<banter>")'``
+    suffix since KAN-1279/1280, but until now no test has driven it with a
+    controller that actually returns non-``None`` banter (KAN-1286) --
+    ``HumanCLIController``/``RandomBotController`` never do. X wins via the
+    0/4/8 diagonal in three moves with no illegal attempts, so the game
+    completes cleanly while both seats bantering."""
+    x_controller = _ScriptedController(
+        [0, 4, 8], banters=["taking the corner!", "center is mine", "diagonal, gg"]
+    )
+    o_controller = _ScriptedController([1, 2], banters=["blocking...", "not again"])
+
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(
+        engine, players=["X", "O"], seats={"X": x_controller, "O": o_controller}
+    )
+
+    messages: list[str] = []
+    run_match(match, game_name="tictactoe", json_mode=False, print_fn=_recording_print_fn(messages))
+
+    assert any('X plays 0  ("taking the corner!")' in line for line in messages)
+    assert any('O plays 1  ("blocking...")' in line for line in messages)
+    assert any('X plays 8  ("diagonal, gg")' in line for line in messages)
+    assert match.winners() == ["X"]
+
+
+def test_banter_is_rendered_as_a_non_null_json_field_in_json_mode() -> None:
+    """Same scenario as the text-mode banter test above, but in ``--json``
+    mode: each ``"turn"`` event's ``"banter"`` key (present in the envelope
+    since KAN-1279/1280) must actually carry the non-``None`` banter text,
+    not just be structurally present-but-always-null."""
+    import json
+
+    x_controller = _ScriptedController(
+        [0, 4, 8], banters=["taking the corner!", "center is mine", "diagonal, gg"]
+    )
+    o_controller = _ScriptedController([1, 2], banters=["blocking...", "not again"])
+
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(
+        engine, players=["X", "O"], seats={"X": x_controller, "O": o_controller}
+    )
+
+    lines: list[str] = []
+    run_match(match, game_name="tictactoe", json_mode=True, print_fn=_recording_print_fn(lines))
+
+    turn_events = [json.loads(line) for line in lines if json.loads(line)["type"] == "turn"]
+    assert [event["banter"] for event in turn_events] == [
+        "taking the corner!",
+        "blocking...",
+        "center is mine",
+        "not again",
+        "diagonal, gg",
+    ]
