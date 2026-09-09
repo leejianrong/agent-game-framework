@@ -6,6 +6,19 @@ mechanics moved into ``Match`` by KAN-1280):
 
     agf play tictactoe --seat X=human --seat O=bot:random [--json]
 
+A ``--seat`` spec may also carry an ``:advised-by=algo:<name>`` or
+``:narrated-by=<controller-spec>`` modifier suffix (SLICES.md V4 step 5,
+KAN-1291), composing a base spec + an ``algo:<name>`` algorithm spec into an
+``AdvisedLLMSeatController``/``AutoplayNarratorSeatController`` (ADR-0004),
+e.g.::
+
+    agf play tictactoe \\
+      --seat X=llm:openrouter/openai/gpt-4o-mini:advised-by=algo:tictactoe-minimax \\
+      --seat O=algo:tictactoe-minimax:narrated-by=llm:openrouter/openai/gpt-4o-mini
+
+The plain, unadvised ``--seat=llm:openrouter/<model>`` form from V3 keeps
+working completely unchanged -- see ``build_controller``.
+
 Per ADR-0006, this module is a *thin* adapter over ``Match``/``GameEngine``:
 it parses ``--seat``/``--json``, builds a seat -> ``SeatController`` mapping
 and hands it to ``Match`` (which owns turn-loop mechanics, PLAN.md Shape S2),
@@ -50,6 +63,11 @@ from typing import Any
 
 from agent_game_framework import __version__
 from agent_game_framework.agents import HumanCLIController, OpenRouterBackend, RandomBotController
+from agent_game_framework.algorithm import (
+    AdvisedLLMSeatController,
+    AutoplayNarratorSeatController,
+    GameAlgorithm,
+)
 from agent_game_framework.core import (
     AgentTimeoutError,
     GameEngine,
@@ -61,6 +79,7 @@ from agent_game_framework.core import (
 )
 
 GameFactory = Callable[[], GameEngine[Any, Any, Any]]
+AlgorithmFactory = Callable[[], GameAlgorithm[Any, Any]]
 
 
 def _make_tictactoe_engine() -> GameEngine[Any, Any, Any]:
@@ -79,6 +98,34 @@ zero-argument factory returning a fresh ``GameEngine`` instance.
 
 A small dict, not a plugin system -- deliberately, per this ticket's scope
 (only one game exists today). Add an entry here when a second game lands.
+"""
+
+
+def _make_tictactoe_minimax_algorithm() -> GameAlgorithm[Any, Any]:
+    """Import and build ``TicTacToeMinimaxAlgorithm`` lazily -- same reasoning
+    as ``_make_tictactoe_engine``: ``examples/`` isn't on ``sys.path`` for a
+    plain installed console script with no repo checkout nearby."""
+    from examples.tictactoe.algorithm.minimax import TicTacToeMinimaxAlgorithm
+
+    return TicTacToeMinimaxAlgorithm()
+
+
+ALGORITHM_REGISTRY: dict[str, AlgorithmFactory] = {
+    "tictactoe-minimax": _make_tictactoe_minimax_algorithm,
+}
+"""``algo:<name>`` name (as used in a ``--seat`` spec's ``advised-by=``/
+``narrated-by=`` modifier, e.g. ``algo:tictactoe-minimax``) -> a
+zero-argument factory returning a fresh ``GameAlgorithm`` instance.
+
+Mirrors ``GAME_REGISTRY``'s exact shape/reasoning (SLICES.md V4 step 5,
+KAN-1291) -- a small dict, not a plugin system, one entry per algorithm that
+exists today. There is deliberately no *bare* ``algo:...`` seat spec (a
+standalone algorithm-only bot with no LLM at all) wired up in
+``build_controller`` -- ADR-0004 calls that a "trivial degenerate case," but
+no ticket has built the ``AlgorithmSeatController`` class it would need, and
+this ticket's demo/test plan only exercises the two composite forms
+(``advised-by=``/``narrated-by=``). ``build_algorithm``'s only caller is the
+modifier-parsing logic inside ``build_controller``.
 """
 
 
@@ -117,6 +164,51 @@ first ``/`` -- OpenRouter model slugs themselves routinely contain a ``/``
 (e.g. ``openai/gpt-4o-mini``, ``anthropic/claude-3.5-sonnet``), so splitting
 on the first ``/`` would chop the provider half off the model slug."""
 
+_ALGO_PREFIX = "algo:"
+"""Fixed prefix an algorithm spec (e.g. ``algo:tictactoe-minimax``) must
+start with -- see ``build_algorithm``."""
+
+_ADVISED_BY_SEP = ":advised-by="
+"""Literal substring marking an ``:advised-by=<algo-spec>`` modifier suffix
+on a ``--seat`` spec, e.g.
+``"llm:openrouter/openai/gpt-4o-mini:advised-by=algo:tictactoe-minimax"``.
+Composes into an ``AdvisedLLMSeatController`` -- see ``build_controller``."""
+
+_NARRATED_BY_SEP = ":narrated-by="
+"""Literal substring marking a ``:narrated-by=<controller-spec>`` modifier
+suffix on a ``--seat`` spec, e.g.
+``"algo:tictactoe-minimax:narrated-by=llm:openrouter/openai/gpt-4o-mini"``.
+Composes into an ``AutoplayNarratorSeatController`` -- see
+``build_controller``."""
+
+
+def build_algorithm(spec: str) -> GameAlgorithm[Any, Any]:
+    """Build the ``GameAlgorithm`` named by one ``algo:<name>`` spec string
+    (SLICES.md V4 step 5, KAN-1291).
+
+    Mirrors ``build_controller``'s exact shape: strips the required
+    ``"algo:"`` prefix, looks the remainder up in ``ALGORITHM_REGISTRY``, and
+    raises ``SeatSpecError`` -- the one exception type every spec-parsing
+    error in this module raises -- for a missing prefix or an unknown name.
+
+    This is only ever called from ``build_controller``'s modifier-parsing
+    logic (the ``:advised-by=``/``:narrated-by=`` suffixes) -- there is no
+    top-level, bare ``algo:...`` seat spec wired up (see
+    ``ALGORITHM_REGISTRY``'s docstring for why).
+    """
+    if not spec.startswith(_ALGO_PREFIX):
+        raise SeatSpecError(
+            f"algorithm spec {spec!r} must start with 'algo:' (e.g. 'algo:tictactoe-minimax')"
+        )
+    name = spec[len(_ALGO_PREFIX) :]
+    factory = ALGORITHM_REGISTRY.get(name)
+    if factory is None:
+        raise SeatSpecError(
+            f"unknown algorithm {name!r} in spec {spec!r}; available algorithms: "
+            f"{sorted(ALGORITHM_REGISTRY)}"
+        )
+    return factory()
+
 
 def build_controller(spec: str) -> SeatController[Any, Any]:
     """Build the ``SeatController`` named by one controller spec string.
@@ -127,8 +219,36 @@ def build_controller(spec: str) -> SeatController[Any, Any]:
     (SLICES.md V3 step 3, KAN-1286) -- everything after the fixed
     ``"llm:openrouter/"`` prefix is passed through verbatim as the model
     slug, including any further ``/`` it contains (see ``_OPENROUTER_PREFIX``).
-    Algorithm specs (``algo:...``, and composite ``advised-by=``/
-    ``narrated-by=`` modifiers) are a later ticket (V4), not this one.
+
+    Also supported (SLICES.md V4 step 5, KAN-1291): a spec carrying an
+    ``:advised-by=<algo-spec>`` or ``:narrated-by=<controller-spec>``
+    modifier suffix, composing a base spec with a modifier value into one of
+    the two framework-provided composite controllers (ADR-0004):
+
+    - ``"<base>:advised-by=<algo-spec>"`` -> ``AdvisedLLMSeatController(llm=
+      build_controller(base), algorithm=build_algorithm(algo_spec))``, e.g.
+      ``"llm:openrouter/openai/gpt-4o-mini:advised-by=algo:tictactoe-minimax"``.
+    - ``"<algo-spec>:narrated-by=<controller-spec>"`` -> ``AutoplayNarratorSeatController(
+      algorithm=build_algorithm(algo_spec), narrator_llm=build_controller(controller_spec))``,
+      e.g. ``"algo:tictactoe-minimax:narrated-by=llm:openrouter/openai/gpt-4o-mini"``.
+
+    Modifier detection happens **before** any of the plain-spec checks below
+    -- this is the one subtlety to preserve here: since an ``llm:openrouter/``
+    model slug can itself contain arbitrary characters (only the fixed
+    prefix is stripped, see ``_OPENROUTER_PREFIX``), an
+    ``:advised-by=``/``:narrated-by=`` suffix must be split off *before* that
+    branch runs, or the entire modifier would be swallowed into the model
+    slug instead of being recognized as a modifier. A spec is never expected
+    to carry both suffixes; whichever literal substring is found first
+    (``:advised-by=`` checked first) determines which composite is built --
+    the base/modifier spec on either side of it is resolved generically, via
+    a recursive call to this same function (for a ``SeatController``) or to
+    ``build_algorithm`` (for a ``GameAlgorithm``), so *any* spec that
+    resolves to the right kind of thing composes, not just an ``llm:`` base
+    or an ``algo:`` modifier specifically.
+
+    A *bare* ``algo:...`` spec (no modifier) is intentionally unsupported --
+    see ``ALGORITHM_REGISTRY``'s docstring.
 
     Raises ``SeatSpecError`` for: an empty model after the ``llm:openrouter/``
     prefix (``"llm:openrouter/"`` with nothing after it); an ``llm:`` spec
@@ -139,9 +259,36 @@ def build_controller(spec: str) -> SeatController[Any, Any]:
     ``ValueError`` for this -- wrapped into ``SeatSpecError`` here so
     ``cmd_play``'s single existing ``except SeatSpecError`` catch site is
     still the one place every ``--seat`` construction error surfaces, rather
-    than a raw ``ValueError`` escaping and crashing the CLI); or any other
-    unrecognized spec entirely.
+    than a raw ``ValueError`` escaping and crashing the CLI); an empty base
+    or modifier half of an ``:advised-by=``/``:narrated-by=`` spec; an
+    unresolvable base/modifier spec nested inside one (an unknown algorithm
+    name, a bad nested controller spec -- ``build_algorithm``/the recursive
+    call to this function already raise ``SeatSpecError`` for those, so no
+    extra wrapping is needed here); or any other unrecognized spec entirely.
     """
+    if _ADVISED_BY_SEP in spec:
+        base_spec, _, modifier_spec = spec.partition(_ADVISED_BY_SEP)
+        if not base_spec or not modifier_spec:
+            raise SeatSpecError(
+                f"--seat spec {spec!r} is missing a base or algorithm spec around "
+                "':advised-by=' (e.g. "
+                "'llm:openrouter/openai/gpt-4o-mini:advised-by=algo:tictactoe-minimax')"
+            )
+        llm = build_controller(base_spec)
+        algorithm = build_algorithm(modifier_spec)
+        return AdvisedLLMSeatController(llm=llm, algorithm=algorithm)
+    if _NARRATED_BY_SEP in spec:
+        base_spec, _, modifier_spec = spec.partition(_NARRATED_BY_SEP)
+        if not base_spec or not modifier_spec:
+            raise SeatSpecError(
+                f"--seat spec {spec!r} is missing an algorithm or narrator spec around "
+                "':narrated-by=' (e.g. "
+                "'algo:tictactoe-minimax:narrated-by=llm:openrouter/openai/gpt-4o-mini')"
+            )
+        algorithm = build_algorithm(base_spec)
+        narrator_llm = build_controller(modifier_spec)
+        return AutoplayNarratorSeatController(algorithm=algorithm, narrator_llm=narrator_llm)
+
     if spec == "human":
         return HumanCLIController()
     if spec == "bot:random":
@@ -165,8 +312,9 @@ def build_controller(spec: str) -> SeatController[Any, Any]:
             "is supported right now"
         )
     raise SeatSpecError(
-        f"unknown controller spec {spec!r}; expected 'human', 'bot:random', or "
-        "'llm:openrouter/<model>'"
+        f"unknown controller spec {spec!r}; expected 'human', 'bot:random', "
+        "'llm:openrouter/<model>', or a composite '<spec>:advised-by=algo:<name>'/"
+        "'algo:<name>:narrated-by=<spec>'"
     )
 
 
@@ -365,7 +513,15 @@ def build_parser() -> argparse.ArgumentParser:
             "per seat (an arbitrary number, in turn order); controller specs: "
             "'human' (reads stdin), 'bot:random' (uniform-random moves), or "
             "'llm:openrouter/<model>' (an OpenRouterBackend seat, e.g. "
-            "llm:openrouter/openai/gpt-4o-mini; needs OPENROUTER_API_KEY set)."
+            "llm:openrouter/openai/gpt-4o-mini; needs OPENROUTER_API_KEY set). "
+            "A spec may also carry an ':advised-by='/':narrated-by=' modifier to "
+            "compose it with an 'algo:<name>' algorithm, e.g. "
+            "'X=llm:openrouter/openai/gpt-4o-mini:advised-by=algo:tictactoe-minimax' "
+            "(an AdvisedLLMSeatController: the LLM decides, informed by the "
+            "algorithm's recommendation) or "
+            "'O=algo:tictactoe-minimax:narrated-by=llm:openrouter/openai/gpt-4o-mini' "
+            "(an AutoplayNarratorSeatController: the algorithm decides, the LLM only "
+            "narrates)."
         ),
     )
     play_parser.add_argument(

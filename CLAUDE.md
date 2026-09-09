@@ -1,7 +1,8 @@
 # agent-game-framework
 
-**Build status: V1, V2 (MCP connector), and V3 (LLM seat controller with
-banter) complete.** `docs/PLAN.md`, `docs/SLICES.md`, and `docs/adr/*` are
+**Build status: V1, V2 (MCP connector), V3 (LLM seat controller with
+banter), and V4 (standalone game algorithm, two composition modes)
+complete.** `docs/PLAN.md`, `docs/SLICES.md`, and `docs/adr/*` are
 the source of truth for *what* is being built and *why*. This file is the
 source of truth for *how* to work in this repo day to day. If this file, the
 docs, and the actual code ever disagree, trust the code — then fix whichever
@@ -30,6 +31,18 @@ See `docs/PLAN.md` for the full problem/solution and `docs/adr/0001` through
   llm:openrouter/<model>` CLI wiring (`KAN-1286`), and the full V3 e2e/test
   suite (`KAN-1287`) are all merged — see `docs/adr/0005`. This closes out
   R1's full 3-way human/AI/all-AI matrix and R3 (LLM banter).
+- V4 (standalone game algorithm, two composition modes) is done: the
+  `GameAlgorithm`/`AlgorithmRecommendation` Protocol (`KAN-1288`), a reference
+  `TicTacToeMinimaxAlgorithm` (`KAN-1289`), the composite
+  `AdvisedLLMSeatController`/`AutoplayNarratorSeatController` seat controllers
+  (`KAN-1290`/`KAN-1292`), and the CLI's `--seat
+  ...:advised-by=algo:<name>`/`...:narrated-by=<spec>` modifier wiring plus
+  the full V4 demo/test suite (`KAN-1291`) are all merged — see
+  `docs/adr/0004`. This is the last slice on the whole `agent-games` board:
+  an algorithm is a standalone, third-party-authorable component (never part
+  of a game's own implementation) that composes into either an LLM-advised
+  or an algorithm-autoplay-narrated seat with zero changes to itself,
+  `GameEngine`, or `SeatController`.
 - The command surface below (`make ...`) is real and gating — CI
   (`.github/workflows/ci.yml`) and the pre-push hook both run it on every
   push/PR.
