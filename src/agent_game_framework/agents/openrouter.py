@@ -91,7 +91,10 @@ class OpenRouterBackend[ObservationT, ActionT]:
 
     - nothing else, in which case an ``httpx2.Client`` is built internally
       using ``api_key`` (or, if that's ``None`` too, the ``OPENROUTER_API_KEY``
-      environment variable) for auth; missing both raises ``ValueError`` at
+      environment variable) for auth, and ``base_url`` (or, if that's
+      ``None`` too, the ``OPENROUTER_BASE_URL`` environment variable, or
+      ``_DEFAULT_BASE_URL`` if neither is set) for the endpoint; missing both
+      the ``api_key`` and its environment fallback raises ``ValueError`` at
       construction time rather than failing confusingly on the first
       ``decide()`` call, or
     - an explicit ``client`` (an ``httpx2.Client``, e.g. one wired to
@@ -111,7 +114,7 @@ class OpenRouterBackend[ObservationT, ActionT]:
         model: str,
         api_key: str | None = None,
         client: httpx2.Client | None = None,
-        base_url: str = _DEFAULT_BASE_URL,
+        base_url: str | None = None,
         timeout: float = 60.0,
     ) -> None:
         self._model = model
@@ -126,8 +129,29 @@ class OpenRouterBackend[ObservationT, ActionT]:
                 "the OPENROUTER_API_KEY environment variable (see .env.example), or "
                 "pass a pre-configured client=... instead."
             )
+        # base_url falls back to OPENROUTER_BASE_URL exactly the way api_key
+        # falls back to OPENROUTER_API_KEY above -- additive and
+        # backward-compatible, since nothing changes for any existing caller
+        # when the env var isn't set (KAN-1287). This is the seam a
+        # subprocess-based e2e test uses to point a real, installed `agf`
+        # CLI process at a local mock HTTP server instead of the real
+        # OpenRouter API: `client=...` (the seam every existing unit/
+        # integration test uses via `httpx2.MockTransport`) only works
+        # in-process, since `MockTransport` intercepts calls made by an
+        # `httpx2.Client` living in the *same* Python process as the test --
+        # it cannot see, let alone intercept, a real OS socket connection
+        # opened by a separate subprocess. `cli.py`'s `build_controller`
+        # constructs `OpenRouterBackend(model=model)` with no explicit
+        # `client`/`base_url`, so an env-var override here is the only way
+        # to redirect that subprocess's real HTTP client without touching
+        # `cli.py` at all.
+        resolved_base_url = (
+            base_url
+            if base_url is not None
+            else os.environ.get("OPENROUTER_BASE_URL", _DEFAULT_BASE_URL)
+        )
         self._client = httpx2.Client(
-            base_url=base_url,
+            base_url=resolved_base_url,
             headers={
                 "Authorization": f"Bearer {resolved_key}",
                 "Content-Type": "application/json",

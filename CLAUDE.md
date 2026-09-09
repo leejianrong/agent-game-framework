@@ -1,10 +1,11 @@
 # agent-game-framework
 
-**Build status: V1 complete, V2 (MCP connector) in progress.** `docs/PLAN.md`,
-`docs/SLICES.md`, and `docs/adr/*` are the source of truth for *what* is being
-built and *why*. This file is the source of truth for *how* to work in this
-repo day to day. If this file, the docs, and the actual code ever disagree,
-trust the code — then fix whichever doc is stale.
+**Build status: V1, V2 (MCP connector), and V3 (LLM seat controller with
+banter) complete.** `docs/PLAN.md`, `docs/SLICES.md`, and `docs/adr/*` are
+the source of truth for *what* is being built and *why*. This file is the
+source of truth for *how* to work in this repo day to day. If this file, the
+docs, and the actual code ever disagree, trust the code — then fix whichever
+doc is stale.
 
 ## What this is
 
@@ -18,11 +19,17 @@ See `docs/PLAN.md` for the full problem/solution and `docs/adr/0001` through
 
 - V1 (core engine, CLI, human/bot seats, zero-required-human matches — epic
   `EPIC-180` on the `agent-games` Pandan board) is done, 7/7 cards.
-- V2 (MCP connector, epic `EPIC-181`): the stdio server (`get_observation`/
-  `list_legal_actions`/`submit_action`/`get_state_dump`, `KAN-1281`) and
-  bot-filled seat assignment via `build_server(..., bot_seats=...)`
-  (`KAN-1282`) are merged. Remaining: a test-only MCP client harness and the
-  full V2 test suite (`KAN-1283`), which closes the epic.
+- V2 (MCP connector, epic `EPIC-181`) is done: the stdio server
+  (`get_observation`/`list_legal_actions`/`submit_action`/`get_state_dump`,
+  `KAN-1281`), bot-filled seat assignment via `build_server(...,
+  bot_seats=...)` (`KAN-1282`), and the full V2 test suite (`KAN-1283`) are
+  all merged.
+- V3 (LLM seat controller with banter via OpenRouter, epic `EPIC-182`) is
+  done: `OpenRouterBackend` (`KAN-1284`), `Match`/CLI reject-and-reprompt-once
+  plus `AgentTimeoutError` handling (`KAN-1285`), the `--seat
+  llm:openrouter/<model>` CLI wiring (`KAN-1286`), and the full V3 e2e/test
+  suite (`KAN-1287`) are all merged — see `docs/adr/0005`. This closes out
+  R1's full 3-way human/AI/all-AI matrix and R3 (LLM banter).
 - The command surface below (`make ...`) is real and gating — CI
   (`.github/workflows/ci.yml`) and the pre-push hook both run it on every
   push/PR.
