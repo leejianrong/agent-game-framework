@@ -108,6 +108,40 @@ def test_full_game_completes_via_one_client_with_bot_seat_auto_playing() -> None
     assert "O" in board
 
 
+def test_get_observation_never_exposes_more_than_observation_for_would() -> None:
+    """SLICES.md V2 integration test plan: "``get_observation`` for a given
+    seat never includes information a ``GameEngine.observation_for`` call
+    would hide for that seat."
+
+    ``GameEngine.observation_for``'s docstring (``engine.py``) says hidden
+    information "is enforced here, once, by the game's own code -- never
+    reimplemented per connector"; the MCP ``get_observation`` tool (see
+    ``server.py``) is a one-line pass-through to exactly that call, so there
+    is no separate hiding/filtering logic in the connector that could drift
+    from the engine's own. For ``TicTacToeEngine`` this is vacuous --
+    ``observation_for`` is full information for every seat (see its own
+    docstring: "Tic-Tac-Toe has no hidden information") -- so the real
+    content of this test is just confirming the pass-through is exact, for
+    every seat, at a non-initial (mid-game) state. Per the ticket, this must
+    be revisited once a hidden-information game exists: at that point this
+    test should additionally assert that ``get_observation``'s result is
+    *missing* whatever ``observation_for`` withholds (e.g. an opponent's
+    hole cards), not merely that it equals ``observation_for``'s output.
+    """
+    match = _make_match()
+    match.submit_action("X", 4)  # a mid-game, non-initial state
+    match.submit_action("O", 0)
+    server = build_server(match)
+
+    async def scenario() -> None:
+        async with Client(server) as client:
+            for player in ("X", "O"):
+                obs = await client.call_tool("get_observation", {"player": player})
+                assert obs.structured_content == match.observation_for(player)
+
+    asyncio.run(scenario())
+
+
 def test_bot_first_mover_has_already_played_before_any_client_call() -> None:
     """If the first player to act is a bot seat, ``build_server`` auto-plays
     it immediately -- before any MCP client makes its first tool call
