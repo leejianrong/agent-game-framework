@@ -579,6 +579,10 @@ line genuinely meant as chat (sent while the opponent's own turn is going to
 take much longer than this, e.g. an in-flight LLM call) is never
 noticeably delayed."""
 
+_STDIN_POLL_SECONDS = 0.05
+"""How often the live-chat loop wakes to check whether the match has ended
+while no stdin line is arriving."""
+
 
 class PendingMoveChannel[ObservationT, ActionT]:
     """Thread-safe hand-off point (ADR-0009) between a chat-enabled human
@@ -765,13 +769,33 @@ def run_live_match_with_chat(
         )
         print_fn()
 
+    # Read stdin on a helper thread so this loop can notice the match ending
+    # (``live.is_alive()``) while no line is arriving. Blocking on ``input_fn``
+    # directly left the CLI waiting for a keypress after the last move whenever
+    # that move was not the human's (e.g. an LLM seat guessing last), and turned
+    # a later end-of-input into a bogus "ended before the match finished".
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def _pump_stdin() -> None:
+        while True:
+            try:
+                lines.put(input_fn())
+            except EOFError:
+                lines.put(None)
+                return
+
+    threading.Thread(target=_pump_stdin, daemon=True).start()
+
     stdin_exhausted = False
     while live.is_alive():
         try:
-            raw = input_fn().strip()
-        except EOFError:
+            item = lines.get(timeout=_STDIN_POLL_SECONDS)
+        except queue.Empty:
+            continue
+        if item is None:
             stdin_exhausted = True
             break
+        raw = item.strip()
         if not raw:
             continue
 
@@ -812,11 +836,16 @@ def run_live_match_with_chat(
             print_fn(f"{opponent_id} (chat): {output.text}")
 
     if stdin_exhausted:
-        print_fn(
-            f"Input ended before the match finished (still waiting on {human_id}) "
-            "-- exiting without a result."
-        )
-        return 4
+        # Input is gone, but the match may still finish by itself (an LLM seat
+        # still thinking). Only give up if the human is actually being waited on.
+        while live.is_alive():
+            if channel.pending_legal_actions() is not None:
+                print_fn(
+                    f"Input ended before the match finished (still waiting on {human_id}) "
+                    "-- exiting without a result."
+                )
+                return 4
+            time.sleep(_STDIN_POLL_SECONDS)
 
     live.join()
     _print_result(match, json_mode=json_mode, print_fn=print_fn, viewer=viewer)
