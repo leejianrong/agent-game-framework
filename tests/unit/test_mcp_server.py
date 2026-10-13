@@ -50,7 +50,7 @@ def test_wrong_type_action_is_rejected_before_reaching_match() -> None:
     before = match.serialize()
 
     with pytest.raises(ToolError):
-        asyncio.run(server.call_tool("submit_action", {"player": "X", "action": "not-an-int"}))
+        asyncio.run(server.call_tool("submit_action", {"player": "X", "action": [1, 2]}))
 
     spy.assert_not_called()
     assert match.serialize() == before

@@ -20,7 +20,9 @@ connector territory for a later card (KAN-1279), not this controller's job.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
+from agent_game_framework.core.engine import is_free_text
 from agent_game_framework.core.seat_controller import SeatDecision
 
 
@@ -54,6 +56,17 @@ class HumanCLIController[ObservationT, ActionT]:
         that matches no legal action.
         """
         self._print_fn("Observation:", observation)
+        free_text = is_free_text(legal_actions)
+        if free_text is not None:
+            # Free-text request (ADR-0010): any non-empty line is the action;
+            # whether it is legal is the engine's call, via Match.
+            self._print_fn(f"Enter {free_text.describe()}.")
+            while True:
+                self._print_fn("Your move: ", end="")
+                raw = self._input_fn().strip()
+                if raw:
+                    return SeatDecision(action=cast(ActionT, raw), banter=None)
+                self._print_fn("Input is empty; try again.")
         self._print_fn("Legal actions:", legal_actions)
 
         choices = {str(action): action for action in legal_actions}

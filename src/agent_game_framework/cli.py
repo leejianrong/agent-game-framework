@@ -90,6 +90,7 @@ from agent_game_framework.core import (
     PlayerId,
     SeatController,
     SeatDecision,
+    is_free_text,
 )
 
 GameFactory = Callable[[], GameEngine[Any, Any, Any]]
@@ -121,8 +122,18 @@ def _make_tictactoe_engine() -> GameEngine[Any, Any, Any]:
     return TicTacToeEngine()
 
 
+def _make_secretnumber_engine() -> GameEngine[Any, Any, Any]:
+    """Lazy import of the hidden-information/free-text reference game
+    (ADR-0010/0011), for the same reason as ``_make_tictactoe_engine``."""
+    _ensure_examples_importable()
+    from examples.secretnumber import SecretNumberEngine
+
+    return SecretNumberEngine()
+
+
 GAME_REGISTRY: dict[str, GameFactory] = {
     "tictactoe": _make_tictactoe_engine,
+    "secretnumber": _make_secretnumber_engine,
 }
 """Game name (as used on the ``agf play <game>`` command line) -> a
 zero-argument factory returning a fresh ``GameEngine`` instance.
@@ -141,6 +152,15 @@ def _make_tictactoe_minimax_algorithm() -> GameAlgorithm[Any, Any]:
 
     return TicTacToeMinimaxAlgorithm()
 
+
+BotFactory = Callable[[], SeatController[Any, Any]]
+
+BOT_REGISTRY: dict[str, BotFactory] = {}
+"""Bot name (``bot:<name>`` on a ``--seat`` spec) -> zero-argument factory
+returning a fresh ``SeatController``. Empty by default: ``bot:random`` stays
+built in; a sibling game repo registers its own scripted bots here (e.g. one
+that can write a free-text clue, which ``RandomBotController`` cannot), the
+same way it adds to ``GAME_REGISTRY`` (ADR-0001/0010)."""
 
 ALGORITHM_REGISTRY: dict[str, AlgorithmFactory] = {
     "tictactoe-minimax": _make_tictactoe_minimax_algorithm,
@@ -195,6 +215,23 @@ class SeatSpecError(ValueError):
     Raised by CLI-layer parsing only (``parse_seat_arg``/``build_controller``)
     -- never by game-rule checks, which stay ``Match``/``GameEngine``'s job.
     """
+
+
+def parse_config_args(raw_items: list[str]) -> dict[str, Any]:
+    """Turn repeated ``--config KEY=VALUE`` items into a config dict. VALUE is
+    parsed as JSON when it is valid JSON (``6`` -> int, ``true`` -> bool),
+    otherwise kept as the raw string. Raises ``ValueError`` on a missing
+    ``=`` or an empty key."""
+    config: dict[str, Any] = {}
+    for item in raw_items:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise ValueError(f"{item!r} must be of the form KEY=VALUE")
+        try:
+            config[key] = json.loads(value)
+        except json.JSONDecodeError:
+            config[key] = value
+    return config
 
 
 def parse_seat_arg(raw: str) -> tuple[PlayerId, str]:
@@ -353,6 +390,8 @@ def build_controller(spec: str) -> SeatController[Any, Any]:
         return HumanCLIController()
     if spec == "bot:random":
         return RandomBotController()
+    if spec.startswith("bot:") and spec[len("bot:") :] in BOT_REGISTRY:
+        return BOT_REGISTRY[spec[len("bot:") :]]()
     if spec.startswith(_OPENROUTER_PREFIX):
         model = spec[len(_OPENROUTER_PREFIX) :]
         if not model:
@@ -384,6 +423,7 @@ def _make_turn_hooks(
     json_mode: bool,
     renderer: Callable[[dict[str, Any]], str] | None,
     print_fn: Callable[..., None],
+    viewer: PlayerId | None = None,
 ) -> tuple[
     Callable[[PlayerId, SeatDecision[Any]], None],
     Callable[[PlayerId, SeatDecision[Any], IllegalActionError], None],
@@ -404,7 +444,7 @@ def _make_turn_hooks(
                         "seat": player,
                         "action": decision.action,
                         "banter": decision.banter,
-                        "state": match.serialize(),
+                        "state": _state_view(match, viewer),
                     }
                 )
             )
@@ -412,7 +452,7 @@ def _make_turn_hooks(
             banter_suffix = f'  ("{decision.banter}")' if decision.banter else ""
             print_fn(f"{player} plays {decision.action!r}{banter_suffix}")
             if renderer is not None:
-                print_fn(renderer(match.observation_for(player)))
+                print_fn(renderer(match.observation_for(viewer if viewer is not None else player)))
             print_fn()
 
     def on_illegal_action(
@@ -435,14 +475,32 @@ def _make_turn_hooks(
     return on_turn, on_illegal_action
 
 
+def _state_view(match: Match[Any, Any, Any], viewer: PlayerId | None) -> dict[str, Any]:
+    """What ``--json`` may show: the full ``serialize()`` dump only when no
+    viewer is named (an omniscient spectator -- no human seat to hide from,
+    or ``--omniscient``); otherwise that viewer's own ``observation_for``, so
+    a hidden-information game never leaks through its own state dump
+    (ADR-0011)."""
+    if viewer is None:
+        return match.serialize()
+    view: dict[str, Any] = match.observation_for(viewer)
+    return view
+
+
 def _print_result(
-    match: Match[Any, Any, Any], *, json_mode: bool, print_fn: Callable[..., None]
+    match: Match[Any, Any, Any],
+    *,
+    json_mode: bool,
+    print_fn: Callable[..., None],
+    viewer: PlayerId | None = None,
 ) -> None:
     """Print the final ``"Game over."``/``--json`` ``"result"`` line -- the
     tail end shared by ``run_match`` and ``run_live_match_with_chat``."""
     winners = match.winners()
     if json_mode:
-        print_fn(json.dumps({"type": "result", "winners": winners, "state": match.serialize()}))
+        print_fn(
+            json.dumps({"type": "result", "winners": winners, "state": _state_view(match, viewer)})
+        )
     elif winners:
         print_fn(f"Game over. Winner(s): {', '.join(winners)}")
     else:
@@ -455,6 +513,7 @@ def run_match(
     json_mode: bool,
     renderer: Callable[[dict[str, Any]], str] | None = None,
     print_fn: Callable[..., None] = print,
+    viewer: PlayerId | None = None,
 ) -> int:
     """Drive ``match`` to completion, formatting output as each turn resolves.
     Always returns ``0`` -- the return value exists so this function and
@@ -503,10 +562,10 @@ def run_match(
     """
 
     on_turn, on_illegal_action = _make_turn_hooks(
-        match, json_mode=json_mode, renderer=renderer, print_fn=print_fn
+        match, json_mode=json_mode, renderer=renderer, print_fn=print_fn, viewer=viewer
     )
     match.run_to_completion(on_turn=on_turn, on_illegal_action=on_illegal_action)
-    _print_result(match, json_mode=json_mode, print_fn=print_fn)
+    _print_result(match, json_mode=json_mode, print_fn=print_fn, viewer=viewer)
     return 0
 
 
@@ -606,6 +665,10 @@ def _match_legal_action(raw: str, legal_actions: list[Any]) -> Any | None:
     """Match a raw stdin line against ``legal_actions`` the same way
     ``HumanCLIController.decide`` does (``str(action)`` equality) -- ``None``
     if it matches none of them."""
+    if is_free_text(legal_actions) is not None:
+        # Free-text request (ADR-0010): any line is the action, except one
+        # carrying the explicit chat prefix, which stays chat.
+        return None if _strip_chat_prefix(raw) is not None else raw
     choices = {str(action): action for action in legal_actions}
     return choices.get(raw)
 
@@ -635,6 +698,7 @@ def run_live_match_with_chat(
     renderer: Callable[[dict[str, Any]], str] | None,
     print_fn: Callable[..., None] = print,
     input_fn: Callable[[], str] = input,
+    viewer: PlayerId | None = None,
 ) -> int:
     """Drive ``match`` to completion on a background thread (``LiveMatch``,
     ADR-0009) while the main thread runs one stdin-reading loop that lets
@@ -683,7 +747,7 @@ def run_live_match_with_chat(
       ``HumanCLIController`` always has, and re-prompts.
     """
     on_turn, on_illegal_action = _make_turn_hooks(
-        match, json_mode=json_mode, renderer=renderer, print_fn=print_fn
+        match, json_mode=json_mode, renderer=renderer, print_fn=print_fn, viewer=viewer
     )
     live: LiveMatch[Any, Any, Any] = LiveMatch(
         match,
@@ -755,7 +819,7 @@ def run_live_match_with_chat(
         return 4
 
     live.join()
-    _print_result(match, json_mode=json_mode, print_fn=print_fn)
+    _print_result(match, json_mode=json_mode, print_fn=print_fn, viewer=viewer)
     return 0
 
 
@@ -837,9 +901,21 @@ def cmd_play(
         channel = PendingMoveChannel()
         seats[human_id] = ChattableHumanController(channel)
 
+    try:
+        config = parse_config_args(args.config)
+    except ValueError as exc:
+        print_fn(f"Invalid --config argument: {exc}")
+        return 2
+
+    # Whose eyes the terminal is: the first human seat's, unless --omniscient
+    # or there is no human (a pure spectator has nobody to hide anything from).
+    # Hot-seat play of a hidden-information game (several humans, one
+    # terminal) is not protected by this -- see ADR-0011.
+    viewer: PlayerId | None = None if args.omniscient or not human_ids else human_ids[0]
+
     engine = GAME_REGISTRY[args.game]()
     try:
-        match: Match[Any, Any, Any] = Match(engine, players=order, seats=seats)
+        match: Match[Any, Any, Any] = Match(engine, players=order, config=config, seats=seats)
     except ValueError as exc:
         print_fn(f"Cannot start {args.game!r} with seats {order!r}: {exc}")
         return 2
@@ -851,7 +927,7 @@ def cmd_play(
         # no hidden information (true of tic-tac-toe today), any player's
         # observation renders the same board; a future hidden-information
         # game would need its own renderer to account for that itself.
-        print_fn(renderer(match.observation_for(order[0])))
+        print_fn(renderer(match.observation_for(viewer if viewer is not None else order[0])))
         print_fn()
 
     try:
@@ -868,8 +944,11 @@ def cmd_play(
                 renderer=renderer,
                 print_fn=print_fn,
                 input_fn=input_fn,
+                viewer=viewer,
             )
-        return run_match(match, json_mode=args.json, renderer=renderer, print_fn=print_fn)
+        return run_match(
+            match, json_mode=args.json, renderer=renderer, print_fn=print_fn, viewer=viewer
+        )
     except AgentTimeoutError as exc:
         if args.json:
             print_fn(json.dumps({"type": "agent_error", "error": str(exc)}))
@@ -927,6 +1006,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit one JSON object per turn (and a final result) instead of a rendered board.",
+    )
+    play_parser.add_argument(
+        "--config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Game config entry passed to the engine's initial_state, e.g. "
+            "--config rounds=6. VALUE is parsed as JSON, else kept as a string. Repeatable."
+        ),
+    )
+    play_parser.add_argument(
+        "--omniscient",
+        action="store_true",
+        help=(
+            "Show the full serialized state in --json output even when a human seat "
+            "is playing (reveals hidden information to the human; default is the "
+            "human seat's own observation)."
+        ),
     )
     play_parser.set_defaults(func=cmd_play)
 

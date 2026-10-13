@@ -24,10 +24,15 @@ handler turns into a structured ``CallToolResult(is_error=True, ...)``
 instead of a raw crash -- the exact same mechanism ``submit_action`` below
 uses to surface ``IllegalActionError`` as a structured tool error.
 
-``action`` on ``submit_action`` is typed plain ``int`` because that is
-``TicTacToeEngine``'s concrete ``ActionT`` -- the only game this ticket
-needs to serve. A future game with a structured/non-int action type would
-need its own tool input shape; that is out of scope here (see the ticket).
+``action`` on ``submit_action`` is typed ``int | str`` (an int index, as
+Tic-Tac-Toe uses, or a free-text string, ADR-0010). A game with a richer
+structured action type would still need its own tool input shape.
+
+**Hidden information (ADR-0011):** unless ``build_server(omniscient=True)``,
+``get_state_dump`` and ``submit_action`` return the caller's own
+``observation_for`` instead of the full ``serialize()`` dump, and
+``bound_seat`` pins the whole server to one seat so a client cannot ask for
+another seat's observation.
 
 **Seat assignment (KAN-1282, SLICES.md V2 step 2):** ``build_server`` takes
 an optional ``bot_seats`` mapping. Any seat *not* in that mapping is
@@ -56,7 +61,13 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from agent_game_framework.core import IllegalActionError, Match, PlayerId, SeatController
+from agent_game_framework.core import (
+    IllegalActionError,
+    Match,
+    PlayerId,
+    SeatController,
+    is_free_text,
+)
 
 SERVER_NAME = "agent-game-framework"
 
@@ -93,6 +104,8 @@ def build_server(
     bot_seats: dict[PlayerId, SeatController[Any, Any]] | None = None,
     *,
     name: str = SERVER_NAME,
+    omniscient: bool = False,
+    bound_seat: PlayerId | None = None,
 ) -> MCPServer[None]:
     """Build an ``MCPServer`` exposing the four tools over ``match``.
 
@@ -123,19 +136,44 @@ def build_server(
 
     _advance_bot_seats(match, seats)
 
+    def resolve(player: PlayerId | None) -> PlayerId:
+        """The seat a call acts for. With ``bound_seat`` set, the one seat this
+        server's client may act or look as (ADR-0011): omitted means that seat,
+        and naming any other seat is refused, so a client cannot read another
+        seat's hidden information through ``get_observation``."""
+        if bound_seat is not None:
+            if player is not None and player != bound_seat:
+                raise ToolError(f"this server is bound to seat {bound_seat!r}, not {player!r}")
+            return bound_seat
+        if player is None:
+            raise ToolError("`player` is required (this server is not bound to a seat)")
+        return player
+
+    def state_for(player: PlayerId) -> dict[str, Any]:
+        """Full dump when ``omniscient``, else ``player``'s own observation."""
+        if omniscient:
+            return match.serialize()
+        view: dict[str, Any] = match.observation_for(player)
+        return view
+
     @server.tool()
-    def get_observation(player: PlayerId) -> dict[str, Any]:
+    def get_observation(player: PlayerId | None = None) -> dict[str, Any]:
         """Return ``player``'s current observation of the match."""
-        result: dict[str, Any] = match.observation_for(player)
+        result: dict[str, Any] = match.observation_for(resolve(player))
         return result
 
     @server.tool()
-    def list_legal_actions(player: PlayerId) -> list[Any]:
-        """Return the actions ``player`` may currently take."""
-        return list(match.legal_actions(player))
+    def list_legal_actions(player: PlayerId | None = None) -> list[Any]:
+        """Return the actions ``player`` may currently take. A free-text
+        request (ADR-0010) comes back as ``{"free_text": "<constraints>"}``."""
+        actions = match.legal_actions(resolve(player))
+        free_text = is_free_text(actions)
+        if free_text is not None:
+            return [{"free_text": free_text.describe()}]
+        return list(actions)
 
     @server.tool()
-    def submit_action(player: PlayerId, action: int) -> dict[str, Any]:
+    def submit_action(action: int | str, player: PlayerId | None = None) -> dict[str, Any]:
         """Apply ``action`` on behalf of ``player``.
 
         On success, returns the new ``match.serialize()`` state so the
@@ -150,17 +188,21 @@ def build_server(
         completely unchanged in that case, so no bot-seat advance happens
         either.
         """
+        seat = resolve(player)
         try:
-            match.submit_action(player, action)
+            match.submit_action(seat, action)
         except IllegalActionError as exc:
             raise ToolError(str(exc)) from exc
         _advance_bot_seats(match, seats)
-        return match.serialize()
+        return state_for(seat)
 
     @server.tool()
-    def get_state_dump() -> dict[str, Any]:
-        """Return the full current match state (``Match.serialize()``)."""
-        return match.serialize()
+    def get_state_dump(player: PlayerId | None = None) -> dict[str, Any]:
+        """Return the current match state: the full ``Match.serialize()`` dump
+        on an ``omniscient`` server, otherwise ``player``'s own observation."""
+        if omniscient:
+            return match.serialize()
+        return state_for(resolve(player))
 
     return server
 
@@ -182,7 +224,7 @@ def main() -> None:
     from examples.tictactoe import TicTacToeEngine
 
     match: Match[Any, Any, Any] = Match(TicTacToeEngine(), players=["X", "O"])
-    server = build_server(match, bot_seats={"O": RandomBotController()})
+    server = build_server(match, bot_seats={"O": RandomBotController()}, omniscient=True)
     server.run("stdio")
 
 

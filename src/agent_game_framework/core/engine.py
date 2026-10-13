@@ -12,6 +12,7 @@ connector code.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 PlayerId = str
@@ -24,6 +25,41 @@ dict keys, JSON state dumps -- and a newtype would add call-site ceremony
 without preventing any error that ``legal_actions``/``apply_action`` would
 not already reject.
 """
+
+
+@dataclass(frozen=True)
+class FreeText:
+    """Marker a game's ``legal_actions`` returns, as its only entry, when the
+    legal action is an arbitrary string rather than a member of a finite list
+    (ADR-0010) -- e.g. a Wavelength clue.
+
+    It carries only *advisory* constraints for whoever is choosing (a prompt
+    for an LLM, a hint for a human); the engine's ``apply_action`` remains the
+    sole authority on whether a given string is legal and raises
+    ``IllegalActionError`` otherwise, exactly as for any other action.
+    ``None`` means "no stated limit".
+    """
+
+    max_words: int | None = None
+    max_chars: int | None = None
+
+    def describe(self) -> str:
+        """One-line human/LLM-readable description of the constraints."""
+        parts = ["a single line of free text"]
+        if self.max_words is not None:
+            parts.append(f"at most {self.max_words} words")
+        if self.max_chars is not None:
+            parts.append(f"at most {self.max_chars} characters")
+        return ", ".join(parts)
+
+
+def is_free_text(legal_actions: list[Any]) -> FreeText | None:
+    """The ``FreeText`` marker if ``legal_actions`` is exactly ``[FreeText]``,
+    else ``None``. Every adapter that turns ``legal_actions`` into a choice
+    (LLM schema, human prompt, CLI chat matcher) goes through this one check."""
+    if len(legal_actions) == 1 and isinstance(legal_actions[0], FreeText):
+        return legal_actions[0]
+    return None
 
 
 class IllegalActionError(Exception):

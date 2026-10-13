@@ -40,7 +40,9 @@ from examples.tictactoe import TicTacToeEngine
 
 def main(seed: int) -> None:
     match: Match[Any, Any, Any] = Match(TicTacToeEngine(), players=["X", "O"])
-    server = build_server(match, bot_seats={"O": RandomBotController(random.Random(seed))})
+    server = build_server(
+        match, bot_seats={"O": RandomBotController(random.Random(seed))}, omniscient=True
+    )
     server.run("stdio")
 
 

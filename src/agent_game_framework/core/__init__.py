@@ -21,7 +21,13 @@ from agent_game_framework.core.conversable import (
     ConversationTurn,
     TextTurn,
 )
-from agent_game_framework.core.engine import GameEngine, IllegalActionError, PlayerId
+from agent_game_framework.core.engine import (
+    FreeText,
+    GameEngine,
+    IllegalActionError,
+    PlayerId,
+    is_free_text,
+)
 from agent_game_framework.core.live_match import LiveMatch
 from agent_game_framework.core.match import Match
 from agent_game_framework.core.seat_controller import (
@@ -36,6 +42,7 @@ __all__ = [
     "ConversationInput",
     "ConversationOutput",
     "ConversationTurn",
+    "FreeText",
     "GameEngine",
     "IllegalActionError",
     "LiveMatch",
@@ -44,4 +51,5 @@ __all__ = [
     "SeatController",
     "SeatDecision",
     "TextTurn",
+    "is_free_text",
 ]
