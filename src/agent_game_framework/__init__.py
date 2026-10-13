@@ -6,6 +6,6 @@ subcommands, or agent backends yet. See docs/PLAN.md and docs/adr/ in the
 repo for the design that later cards build out.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

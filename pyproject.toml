@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-game-framework"
-version = "0.1.0"
+version = "0.2.0"
 description = "Installable framework for playing turn-based/simultaneous-move games with any mix of human and AI-controlled seats."
 readme = "README.md"
 requires-python = ">=3.12"

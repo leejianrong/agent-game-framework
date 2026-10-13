@@ -61,6 +61,7 @@ in.
   `examples/tictactoe/cli_render.py`, looked up generically via
   `RENDERER_REGISTRY` (optional per game), the same pattern
   `GAME_REGISTRY`/`ALGORITHM_REGISTRY` already used.
+- V6 (free-text actions, viewer-scoped connectors, game-registered bots, `--config`, `examples/secretnumber`) is done — see `docs/adr/0010` and `0011`. Requested by the sibling Wavelength repo (`leejianrong/wavelength`), which pins this package by tag.
 - The command surface below (`make ...`) is real and gating — CI
   (`.github/workflows/ci.yml`) and the pre-push hook both run it on every
   push/PR.

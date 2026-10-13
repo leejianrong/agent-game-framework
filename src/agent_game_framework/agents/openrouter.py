@@ -55,6 +55,7 @@ from agent_game_framework.core.conversable import (
     ConversationTurn,
     TextTurn,
 )
+from agent_game_framework.core.engine import is_free_text
 from agent_game_framework.core.seat_controller import SeatDecision
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -67,6 +68,12 @@ _SYSTEM_PROMPT = (
     "sentence or less), in-character `banter` line about your move. Never "
     "call any tool other than `submit_move`, and never respond with plain "
     "text instead of a tool call."
+)
+
+_FREE_TEXT_PROMPT_SUFFIX = (
+    " This turn's `legal_actions` is a free-text request rather than a list: "
+    "set `action` to your own text, obeying the stated constraints, and put "
+    "any commentary only in `banter`."
 )
 
 _TOOL_NAME = "submit_move"
@@ -241,9 +248,7 @@ class OpenRouterBackend[ObservationT, ActionT]:
         try:
             data = response.json()
         except Exception as exc:
-            raise ResponseParseError(
-                f"OpenRouter response body was not valid JSON: {exc}"
-            ) from exc
+            raise ResponseParseError(f"OpenRouter response body was not valid JSON: {exc}") from exc
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -270,8 +275,28 @@ class OpenRouterBackend[ObservationT, ActionT]:
         string, with ``tool_choice`` forcing that exact tool so the model
         cannot reply with plain text instead of a structured call.
         """
+        free_text = is_free_text(legal_actions)
+        shown_actions: Any = (
+            {"free_text": free_text.describe()} if free_text is not None else legal_actions
+        )
         user_content = json.dumps(
-            {"observation": observation, "legal_actions": legal_actions}, default=str
+            {"observation": observation, "legal_actions": shown_actions}, default=str
+        )
+        action_schema: dict[str, Any] = (
+            {
+                "type": "string",
+                "minLength": 1,
+                "description": f"Your free-text action: {free_text.describe()}.",
+                **({"maxLength": free_text.max_chars} if free_text.max_chars is not None else {}),
+            }
+            if free_text is not None
+            else {
+                "description": (
+                    "The chosen action. Must be exactly one of the "
+                    "`legal_actions` given in the user message."
+                ),
+                "enum": legal_actions,
+            }
         )
         tool = {
             "type": "function",
@@ -284,18 +309,11 @@ class OpenRouterBackend[ObservationT, ActionT]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {
-                            "description": (
-                                "The chosen action. Must be exactly one of the "
-                                "`legal_actions` given in the user message."
-                            ),
-                            "enum": legal_actions,
-                        },
+                        "action": action_schema,
                         "banter": {
                             "type": "string",
                             "description": (
-                                "A short (one sentence or less) in-character line "
-                                "about this move."
+                                "A short (one sentence or less) in-character line about this move."
                             ),
                         },
                     },
@@ -307,7 +325,11 @@ class OpenRouterBackend[ObservationT, ActionT]:
         return {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": _SYSTEM_PROMPT
+                    + (_FREE_TEXT_PROMPT_SUFFIX if free_text is not None else ""),
+                },
                 {"role": "user", "content": user_content},
             ],
             "tools": [tool],
@@ -333,9 +355,7 @@ class OpenRouterBackend[ObservationT, ActionT]:
         try:
             data = response.json()
         except Exception as exc:
-            raise ResponseParseError(
-                f"OpenRouter response body was not valid JSON: {exc}"
-            ) from exc
+            raise ResponseParseError(f"OpenRouter response body was not valid JSON: {exc}") from exc
 
         try:
             message = data["choices"][0]["message"]

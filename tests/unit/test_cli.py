@@ -20,11 +20,11 @@ from agent_game_framework.cli import (
 )
 
 
-def test_game_registry_has_exactly_tictactoe() -> None:
+def test_game_registry_has_the_reference_games() -> None:
     """Only Tic-Tac-Toe is registered for now (this ticket's scope) -- but
     the registry is a dict, not a hardcoded if/else, so adding a second game
     later is a one-line addition here."""
-    assert set(GAME_REGISTRY) == {"tictactoe"}
+    assert set(GAME_REGISTRY) == {"tictactoe", "secretnumber"}
 
 
 class TestParseSeatArg:
