@@ -21,7 +21,13 @@ from collections.abc import Iterator
 from typing import Any
 
 from agent_game_framework.cli import run_match
-from agent_game_framework.core import Match, PlayerId, SeatDecision
+from agent_game_framework.core import (
+    ConversationTurn,
+    Match,
+    PlayerId,
+    SeatDecision,
+    TextTurn,
+)
 from examples.tictactoe import TicTacToeEngine
 
 
@@ -63,6 +69,34 @@ class _ScriptedController:
     def decide(self, observation: Any, legal_actions: list[int]) -> SeatDecision[int]:
         self.calls += 1
         return SeatDecision(action=next(self._actions), banter=next(self._banters))
+
+
+class _ScriptedConversableController:
+    """A ``_ScriptedController`` that also implements ``Conversable`` --
+    the fake used to prove ``run_match``'s ``banter_exchange_seats`` wiring
+    (an all-AI seat is one more real ``SeatController`` that just also
+    happens to support ``respond()``, exactly as ``OpenRouterBackend``
+    does). ``respond()`` always returns a fixed reply prefixed with this
+    seat's own label, and records every call it received so a test can
+    assert both *how many* times it was addressed and *what* it was told.
+    """
+
+    def __init__(
+        self, label: str, actions: list[int], banters: list[str | None] | None = None
+    ) -> None:
+        self._label = label
+        self._actions: Iterator[int] = iter(actions)
+        self._banters: Iterator[str | None] = iter(
+            banters if banters is not None else [None] * len(actions)
+        )
+        self.respond_calls: list[tuple[list[ConversationTurn], TextTurn]] = []
+
+    def decide(self, observation: Any, legal_actions: list[int]) -> SeatDecision[int]:
+        return SeatDecision(action=next(self._actions), banter=next(self._banters))
+
+    def respond(self, history: list[ConversationTurn], incoming: TextTurn) -> TextTurn:
+        self.respond_calls.append((list(history), incoming))
+        return TextTurn(text=f"{self._label} says: nice try, {incoming.text!r}")
 
 
 def test_illegal_action_from_submit_action_does_not_advance_the_turn() -> None:
@@ -201,3 +235,90 @@ def test_banter_is_rendered_as_a_non_null_json_field_in_json_mode() -> None:
         "not again",
         "diagonal, gg",
     ]
+
+
+def test_banter_exchange_lets_the_other_ai_seat_reply_with_no_human_involved() -> None:
+    """Two ``Conversable`` seats, zero human: every move that carries banter
+    gets one spontaneous reply printed from the *other* seat, addressed by
+    name -- the all-AI analogue of chat mode, proven here with no
+    ``LiveMatch``/threading and no real LLM call involved."""
+    x_controller = _ScriptedConversableController(
+        "X", [0, 4, 8], banters=["taking the corner!", "center is mine", "diagonal, gg"]
+    )
+    o_controller = _ScriptedConversableController("O", [1, 2], banters=["blocking...", "not again"])
+
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(
+        engine, players=["X", "O"], seats={"X": x_controller, "O": o_controller}
+    )
+
+    messages: list[str] = []
+    run_match(
+        match,
+        json_mode=False,
+        print_fn=_recording_print_fn(messages),
+        banter_exchange_seats={"X": x_controller, "O": o_controller},
+    )
+
+    assert match.winners() == ["X"]
+    # X moved 3 times, O moved 2 times -- each move's banter earns exactly
+    # one reply from the *other* seat, never a reply to oneself.
+    assert any("O (reply to X):" in line and "taking the corner!" in line for line in messages)
+    assert any("X (reply to O):" in line and "blocking..." in line for line in messages)
+    assert len(x_controller.respond_calls) == 2  # replied to O's 2 banters
+    assert len(o_controller.respond_calls) == 3  # replied to X's 3 banters
+
+
+def test_banter_exchange_skips_a_turn_with_no_banter_and_never_recurses() -> None:
+    """A move with no banter triggers no reply at all; a reply itself is
+    never fed back in as a new incoming message (each seat's ``respond()``
+    is called exactly once per *opponent* banter, not once per reply too --
+    otherwise this would recurse forever)."""
+    x_controller = _ScriptedConversableController("X", [0, 4, 8], banters=[None, None, "gg"])
+    o_controller = _ScriptedConversableController("O", [1, 2], banters=[None, None])
+
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(
+        engine, players=["X", "O"], seats={"X": x_controller, "O": o_controller}
+    )
+
+    messages: list[str] = []
+    run_match(
+        match,
+        json_mode=False,
+        print_fn=_recording_print_fn(messages),
+        banter_exchange_seats={"X": x_controller, "O": o_controller},
+    )
+
+    assert match.winners() == ["X"]
+    # Only X's final "gg" move ever carried banter -- exactly one reply,
+    # from O, and O's own (banter-less) moves triggered none from X.
+    assert sum("(reply to" in line for line in messages) == 1
+    assert len(x_controller.respond_calls) == 0
+    assert len(o_controller.respond_calls) == 1
+    assert o_controller.respond_calls[0][1] == TextTurn(text="gg")
+
+
+def test_banter_exchange_is_present_as_a_chat_event_in_json_mode() -> None:
+    import json
+
+    x_controller = _ScriptedConversableController("X", [0, 4, 8], banters=["hi", None, "gg"])
+    o_controller = _ScriptedConversableController("O", [1, 2], banters=[None, None])
+
+    engine = TicTacToeEngine()
+    match: Match[Any, int, Any] = Match(
+        engine, players=["X", "O"], seats={"X": x_controller, "O": o_controller}
+    )
+
+    lines: list[str] = []
+    run_match(
+        match,
+        json_mode=True,
+        print_fn=_recording_print_fn(lines),
+        banter_exchange_seats={"X": x_controller, "O": o_controller},
+    )
+
+    parsed = [json.loads(line) for line in lines]
+    chat_events = [event for event in parsed if event["type"] == "chat"]
+    assert [event["seat"] for event in chat_events] == ["O", "O"]
+    assert all(event["text"].startswith("O says:") for event in chat_events)
