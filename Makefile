@@ -1,5 +1,8 @@
 .DEFAULT_GOAL := help
 
+# Model the demos use for every LLM seat. Override per run: make demo DEMO_MODEL=openai/gpt-4o-mini
+DEMO_MODEL ?= deepseek/deepseek-v4.1-flash
+
 .PHONY: help install lint typecheck test-unit test-integration test-e2e test all play demo demo-advised demo-ai-vs-ai
 
 help: ## Show this help
@@ -14,18 +17,18 @@ play: install ## Play tic-tac-toe: you (X) vs. a random bot (O)
 demo: install ## Play tic-tac-toe vs. an unbeatable minimax O, narrated by an LLM you can also chat with -- needs OPENROUTER_API_KEY in .env
 	@test -f .env || { echo "Missing .env -- copy .env.example to .env and set OPENROUTER_API_KEY first."; exit 1; }
 	uv run --env-file .env agf play tictactoe --seat X=human \
-		--seat O=algo:tictactoe-minimax:narrated-by=llm:openrouter/deepseek/deepseek-v4-flash
+		--seat O=algo:tictactoe-minimax:narrated-by=llm:openrouter/$(DEMO_MODEL)
 
 demo-advised: install ## Play tic-tac-toe vs. an LLM O that decides for itself, advised by minimax's recommendation (can still lose) -- needs OPENROUTER_API_KEY in .env
 	@test -f .env || { echo "Missing .env -- copy .env.example to .env and set OPENROUTER_API_KEY first."; exit 1; }
 	uv run --env-file .env agf play tictactoe --seat X=human \
-		--seat O=llm:openrouter/deepseek/deepseek-v4-flash:advised-by=algo:tictactoe-minimax
+		--seat O=llm:openrouter/$(DEMO_MODEL):advised-by=algo:tictactoe-minimax
 
 demo-ai-vs-ai: install ## Watch two LLMs play tic-tac-toe against each other, no human seat, trash-talking after every move -- needs OPENROUTER_API_KEY in .env
 	@test -f .env || { echo "Missing .env -- copy .env.example to .env and set OPENROUTER_API_KEY first."; exit 1; }
 	uv run --env-file .env agf play tictactoe \
-		--seat X=llm:openrouter/deepseek/deepseek-v4-flash \
-		--seat O=llm:openrouter/openai/gpt-4o-mini
+		--seat X=llm:openrouter/$(DEMO_MODEL) \
+		--seat O=llm:openrouter/$(DEMO_MODEL)
 
 lint: ## Run ruff
 	uv run ruff check .
