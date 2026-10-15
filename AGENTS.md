@@ -130,6 +130,24 @@ gitignored and must never be logged. No other secrets are expected in this
 repo. If one ever leaks into git history, rotate it — assume history is
 permanent.
 
+## Releases
+
+Versions are git tags (`vX.Y.Z`) on `main`, with a GitHub release each. The
+tag must match `version` in `pyproject.toml` and `__version__` in
+`src/agent_game_framework/__init__.py`; bump both in the PR that ships the
+change. To release, after the PR merges:
+
+```
+git tag -a vX.Y.Z <merge-commit> -m "vX.Y.Z: <summary>"
+git push origin vX.Y.Z
+gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <notes> --verify-tag
+```
+
+Sibling game repos should pin a tag, not a bare SHA. Slice names (V6, ...)
+live in `docs/` and PR titles, not in tags. `git worktree`s for a slice are
+temporary: remove the worktree and delete the merged branch (local and
+remote) once its PR lands.
+
 ## Docs
 
 `docs/PLAN.md`, `docs/SLICES.md`, `docs/QUESTIONS.md`, `docs/adr/*`. No
