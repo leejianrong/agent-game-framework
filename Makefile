@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint typecheck test-unit test-integration test-e2e test all play demo demo-advised
+.PHONY: help install lint typecheck test-unit test-integration test-e2e test all play demo demo-advised demo-ai-vs-ai
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -20,6 +20,12 @@ demo-advised: install ## Play tic-tac-toe vs. an LLM O that decides for itself, 
 	@test -f .env || { echo "Missing .env -- copy .env.example to .env and set OPENROUTER_API_KEY first."; exit 1; }
 	uv run --env-file .env agf play tictactoe --seat X=human \
 		--seat O=llm:openrouter/deepseek/deepseek-v4-flash:advised-by=algo:tictactoe-minimax
+
+demo-ai-vs-ai: install ## Watch two LLMs play tic-tac-toe against each other, no human seat, trash-talking after every move -- needs OPENROUTER_API_KEY in .env
+	@test -f .env || { echo "Missing .env -- copy .env.example to .env and set OPENROUTER_API_KEY first."; exit 1; }
+	uv run --env-file .env agf play tictactoe \
+		--seat X=llm:openrouter/deepseek/deepseek-v4-flash \
+		--seat O=llm:openrouter/openai/gpt-4o-mini
 
 lint: ## Run ruff
 	uv run ruff check .

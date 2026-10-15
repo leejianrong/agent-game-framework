@@ -83,6 +83,7 @@ from agent_game_framework.algorithm import (
 from agent_game_framework.core import (
     AgentTimeoutError,
     Conversable,
+    ConversationTurn,
     GameEngine,
     IllegalActionError,
     LiveMatch,
@@ -90,6 +91,7 @@ from agent_game_framework.core import (
     PlayerId,
     SeatController,
     SeatDecision,
+    TextTurn,
     is_free_text,
 )
 
@@ -487,6 +489,66 @@ def _state_view(match: Match[Any, Any, Any], viewer: PlayerId | None) -> dict[st
     return view
 
 
+def _make_banter_exchange_hook(
+    conversable_seats: dict[PlayerId, Conversable],
+    *,
+    json_mode: bool,
+    print_fn: Callable[..., None],
+) -> Callable[[PlayerId, SeatDecision[Any]], None]:
+    """Build an ``on_turn`` hook giving two-or-more all-AI ``Conversable``
+    seats spontaneous back-and-forth banter, with zero human seat and zero
+    threading involved (contrast ``LiveMatch``/ADR-0009, built for a human to
+    chat with one AI seat *asynchronously*, any time -- there is no human
+    stdin loop here to multiplex, so this simply runs synchronously inside
+    ``Match.run_to_completion``'s own turn loop).
+
+    Each time a seat's ``SeatDecision.banter`` is non-empty, every *other*
+    seat named in ``conversable_seats`` gets one ``Conversable.respond()``
+    call with that banter as the incoming message, and the reply is printed
+    immediately -- one exchange per turn, addressed to the seat that just
+    moved. This never recurses (a reply is only ever printed, never itself
+    fed back in as a new incoming message), so a match can never get stuck
+    in a back-and-forth loop: at most ``len(conversable_seats) - 1`` replies
+    per real game turn, bounded by the game's own move count.
+
+    A seat with no banter on a given turn (or one not in
+    ``conversable_seats`` at all -- e.g. ``bot:random``) triggers no
+    exchange for that turn; this hook only ever *adds* chat lines after the
+    plain turn line ``_make_turn_hooks``' own ``on_turn`` already prints, it
+    never suppresses or replaces that output.
+
+    Each listed seat keeps its own conversation history across the whole
+    match (mirroring ``LiveMatch._history``'s per-seat shape), so a seat's
+    later reply can plausibly reference an earlier exchange, not just the
+    single most recent line.
+    """
+    history: dict[PlayerId, list[ConversationTurn]] = {
+        player: [] for player in conversable_seats
+    }
+
+    def on_turn(mover: PlayerId, decision: SeatDecision[Any]) -> None:
+        if not decision.banter:
+            return
+        incoming = TextTurn(text=decision.banter)
+        for player, conversable in conversable_seats.items():
+            if player == mover:
+                continue
+            output = conversable.respond(history[player], incoming)
+            # "human" here just means "the other party" per ConversationTurn's
+            # own docstring (conversable.py) -- there is no human seat in this
+            # mode at all, only two (or more) AI seats addressing each other.
+            history[player].append(ConversationTurn(role="human", content=incoming))
+            history[player].append(ConversationTurn(role="agent", content=output))
+            if json_mode:
+                print_fn(
+                    json.dumps({"type": "chat", "seat": player, "text": output.text})
+                )
+            else:
+                print_fn(f'  {player} (reply to {mover}): "{output.text}"')
+
+    return on_turn
+
+
 def _print_result(
     match: Match[Any, Any, Any],
     *,
@@ -514,6 +576,7 @@ def run_match(
     renderer: Callable[[dict[str, Any]], str] | None = None,
     print_fn: Callable[..., None] = print,
     viewer: PlayerId | None = None,
+    banter_exchange_seats: dict[PlayerId, Conversable] | None = None,
 ) -> int:
     """Drive ``match`` to completion, formatting output as each turn resolves.
     Always returns ``0`` -- the return value exists so this function and
@@ -529,6 +592,16 @@ def run_match(
     no rule checking happens here (ADR-0006), and this module never drives
     the loop itself. A zero-human-seat (all-bot) match and a mixed
     human/bot match both flow through this exact same call (R1).
+
+    ``banter_exchange_seats``, if given (two or more ``Conversable`` seats,
+    built by ``cmd_play`` when a match has zero human seats), wires in
+    ``_make_banter_exchange_hook`` alongside the plain turn-printing hook
+    below: after any seat's move carries banter, every *other* listed seat
+    gets to spontaneously reply to it via ``Conversable.respond()``, printed
+    right under that turn's line. This is the all-AI analogue of chat mode
+    (ADR-0009) -- no human, no background thread, since there is no stdin
+    loop to multiplex here; the exchange runs synchronously, once per turn,
+    inside this same call to ``Match.run_to_completion``.
 
     ``renderer``, if given (looked up by the caller from
     ``RENDERER_REGISTRY`` for the game being played), is called with the
@@ -564,6 +637,16 @@ def run_match(
     on_turn, on_illegal_action = _make_turn_hooks(
         match, json_mode=json_mode, renderer=renderer, print_fn=print_fn, viewer=viewer
     )
+    if banter_exchange_seats:
+        turn_line_hook = on_turn
+        banter_hook = _make_banter_exchange_hook(
+            banter_exchange_seats, json_mode=json_mode, print_fn=print_fn
+        )
+
+        def on_turn(player: PlayerId, decision: SeatDecision[Any]) -> None:
+            turn_line_hook(player, decision)
+            banter_hook(player, decision)
+
     match.run_to_completion(on_turn=on_turn, on_illegal_action=on_illegal_action)
     _print_result(match, json_mode=json_mode, print_fn=print_fn, viewer=viewer)
     return 0
@@ -880,6 +963,18 @@ def cmd_play(
     original, non-threaded ``run_match`` path unchanged -- ``input_fn`` is
     unused there, exactly as before this ticket.
 
+    **All-AI banter exchange.** If there are zero human seats and two or
+    more seats' controllers implement ``Conversable`` (e.g. two
+    ``llm:openrouter/<model>`` seats), ``run_match`` is called with
+    ``banter_exchange_seats`` set to those seats: after any seat's move
+    carries a banter line, every *other* listed seat spontaneously replies
+    to it via ``Conversable.respond()``, printed immediately under that
+    turn's line -- real back-and-forth trash talk between the AI seats
+    themselves, with no human and no ``LiveMatch``/threading involved (see
+    ``_make_banter_exchange_hook``). This and chat mode are mutually
+    exclusive by construction (one requires exactly one human seat, the
+    other requires zero).
+
     If ``run_match``/``run_live_match_with_chat`` propagates
     ``AgentTimeoutError`` (a seat's controller failed twice in a row to
     produce a decision at all, SLICES.md V3 step 2, KAN-1285), this is
@@ -917,12 +1012,13 @@ def cmd_play(
         if spec == "human":
             human_ids.append(player_id)
 
-    conversable_seats = {
+    conversable_seats: dict[PlayerId, Conversable] = {
         player_id: controller
         for player_id, controller in seats.items()
         if player_id not in human_ids and isinstance(controller, Conversable)
     }
     chat_enabled = len(human_ids) == 1 and len(conversable_seats) == 1
+    banter_exchange_enabled = len(human_ids) == 0 and len(conversable_seats) >= 2
 
     channel: PendingMoveChannel[Any, Any] | None = None
     if chat_enabled:
@@ -976,7 +1072,12 @@ def cmd_play(
                 viewer=viewer,
             )
         return run_match(
-            match, json_mode=args.json, renderer=renderer, print_fn=print_fn, viewer=viewer
+            match,
+            json_mode=args.json,
+            renderer=renderer,
+            print_fn=print_fn,
+            viewer=viewer,
+            banter_exchange_seats=conversable_seats if banter_exchange_enabled else None,
         )
     except AgentTimeoutError as exc:
         if args.json:

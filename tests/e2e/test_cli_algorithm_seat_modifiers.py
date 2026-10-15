@@ -171,8 +171,17 @@ def test_advised_and_autoplay_seats_complete_a_match_with_exact_autoplay_moves()
         # -- Guarantee 2: X's (the advised seat's) logged request payload
         # contains the AlgorithmRecommendation each turn it was asked to
         # decide -- at least one captured request carries it.
+        # Both seats here are Conversable (ADR-0008's pass-through respond()
+        # on the composite controllers), so with zero human seats the CLI's
+        # all-AI banter exchange also fires (cli.py's banter_exchange_enabled)
+        # -- server.received_requests now also holds plain chat/respond()
+        # requests (no "tools" key, a bare banter string as the user message,
+        # never JSON) alongside the decide() ones this loop cares about; skip
+        # those rather than assume every captured request is a decide() call.
         recommendation_payloads = []
         for request in server.received_requests:
+            if "tools" not in request:
+                continue
             user_message = next(
                 m["content"] for m in request["messages"] if m["role"] == "user"
             )
