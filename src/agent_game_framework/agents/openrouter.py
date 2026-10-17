@@ -130,6 +130,9 @@ class OpenRouterBackend[ObservationT, ActionT]:
     ``input_fn``/``print_fn``: a real default for production use, an
     injectable seam for tests.
 
+    ``system_prompt`` (optional) is extra system text, such as a persona,
+    appended to the built-in prompt of every call; it never replaces them.
+
     Also implements ``Conversable`` (ADR-0008, ADR-0009) via ``respond()``: a
     second, independent chat-completions call -- plain, unconstrained free
     text, never the constrained ``submit_move`` tool call ``decide()`` uses
@@ -144,8 +147,13 @@ class OpenRouterBackend[ObservationT, ActionT]:
         client: httpx2.Client | None = None,
         base_url: str | None = None,
         timeout: float = 60.0,
+        system_prompt: str | None = None,
     ) -> None:
         self._model = model
+        # Optional extra system text (a persona, a play style) added after the
+        # built-in prompts for both ``decide()`` and ``respond()``. It never
+        # replaces them, so the tool-call contract and chat rules still hold.
+        self._system_prompt = system_prompt.strip() if system_prompt else ""
         if client is not None:
             self._client = client
             return
@@ -225,7 +233,9 @@ class OpenRouterBackend[ObservationT, ActionT]:
         what serializes that, if a caller uses one; this method itself does
         no locking.
         """
-        messages: list[dict[str, str]] = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}]
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._with_extra(_CHAT_SYSTEM_PROMPT)}
+        ]
         for turn in history:
             role = "user" if turn.role == "human" else "assistant"
             messages.append({"role": role, "content": turn.content.text})
@@ -236,6 +246,9 @@ class OpenRouterBackend[ObservationT, ActionT]:
         )
         response.raise_for_status()
         return self._parse_chat_response(response)
+
+    def _with_extra(self, prompt: str) -> str:
+        return f"{prompt}\n\n{self._system_prompt}" if self._system_prompt else prompt
 
     def _parse_chat_response(self, response: httpx2.Response) -> ConversationOutput:
         """Parse a plain chat-completions response (``respond()``'s, never
@@ -327,8 +340,9 @@ class OpenRouterBackend[ObservationT, ActionT]:
             "messages": [
                 {
                     "role": "system",
-                    "content": _SYSTEM_PROMPT
-                    + (_FREE_TEXT_PROMPT_SUFFIX if free_text is not None else ""),
+                    "content": self._with_extra(
+                        _SYSTEM_PROMPT + (_FREE_TEXT_PROMPT_SUFFIX if free_text is not None else "")
+                    ),
                 },
                 {"role": "user", "content": user_content},
             ],

@@ -399,3 +399,42 @@ def test_respond_raises_response_parse_error_on_non_json_body() -> None:
 
     with pytest.raises(ResponseParseError):
         backend.respond(history=[], incoming=TextTurn(text="hi"))
+
+
+def _capture_payloads(captured: list[dict[str, Any]]) -> httpx2.Client:
+    def _handler(request: httpx2.Request) -> httpx2.Response:
+        captured.append(json.loads(request.content))
+        if "tools" in captured[-1]:
+            return _chat_completion_response(200, {"action": "a", "banter": "b"})(request)
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+
+    return _client_returning(_handler)
+
+
+def test_system_prompt_is_appended_to_the_move_and_chat_prompts() -> None:
+    captured: list[dict[str, Any]] = []
+    backend: OpenRouterBackend[Any, Any] = OpenRouterBackend(
+        model="m", client=_capture_payloads(captured), system_prompt="  You are a dry sceptic.  "
+    )
+    backend.decide({"x": 1}, ["a", "b"])
+    backend.respond(history=[], incoming=TextTurn(text="hello"))
+    for payload in captured:
+        system = payload["messages"][0]
+        assert system["role"] == "system"
+        assert system["content"].endswith("\n\nYou are a dry sceptic.")
+    assert captured[0]["messages"][0]["content"].startswith("You are one player's seat controller")
+    assert "tool_choice" in captured[0]
+    assert "tool_choice" not in captured[1]
+
+
+def test_without_a_system_prompt_the_built_in_prompts_are_unchanged() -> None:
+    captured: list[dict[str, Any]] = []
+    for extra in (None, "", "   "):
+        backend: OpenRouterBackend[Any, Any] = OpenRouterBackend(
+            model="m", client=_capture_payloads(captured), system_prompt=extra
+        )
+        backend.decide({"x": 1}, ["a", "b"])
+        backend.respond(history=[], incoming=TextTurn(text="hello"))
+    contents = {p["messages"][0]["content"] for p in captured}
+    assert len(contents) == 2  # the move prompt and the chat prompt, nothing added
+    assert all(not c.endswith("\n") for c in contents)
